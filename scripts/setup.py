@@ -27,6 +27,33 @@ ALL_PERMISSIONS_PRESET = {
     "codex": "full-access",
     "claude": "bypassPermissions",
 }
+AGENT_CATALOG: Dict[str, Dict[str, Any]] = {
+    "codex": {
+        "label": "Codex ACP",
+        "description": "OpenAI Codex ACP runner",
+        "default_command": "codex-acp",
+        "install_commands": [
+            "npm install -g @zed-industries/codex-acp",
+        ],
+    },
+    "claude": {
+        "label": "Claude Agent ACP",
+        "description": "Anthropic Claude ACP runner",
+        "default_command": "claude-agent-acp",
+        "install_commands": [
+            "npm install -g @zed-industries/claude-agent-acp",
+        ],
+    },
+    "copilot": {
+        "label": "GitHub Copilot CLI ACP",
+        "description": "GitHub Copilot CLI runner with --acp --stdio",
+        "default_command": "copilot --acp --stdio",
+        "install_commands": [
+            "brew install copilot-cli",
+            "npm install -g @github/copilot",
+        ],
+    },
+}
 
 
 class ACPProbeError(RuntimeError):
@@ -241,6 +268,87 @@ def _check_command_available(command: List[str]) -> Tuple[bool, str]:
     if shutil.which(executable) is not None:
         return True, ""
     return False, f"在 PATH 中找不到命令: {executable}"
+
+
+def _print_catalog() -> None:
+    print("可配置的 subagent 清单（预设）：")
+    for agent in AGENTS:
+        item = AGENT_CATALOG[agent]
+        print(f"- {agent}: {item['label']}")
+        print(f"  描述: {item['description']}")
+        print(f"  默认命令: {item['default_command']}")
+        installs = item.get("install_commands", [])
+        if installs:
+            print("  安装命令候选:")
+            for cmd in installs:
+                print(f"    - {cmd}")
+
+
+def _parse_selected_agents(raw: str) -> List[str]:
+    if not raw.strip():
+        return list(AGENTS)
+
+    selected: List[str] = []
+    seen: set[str] = set()
+    for part in raw.split(","):
+        agent = part.strip().lower()
+        if not agent:
+            continue
+        if agent not in AGENT_CATALOG:
+            supported = ", ".join(AGENTS)
+            raise ValueError(f"未知 agent: {agent}（支持: {supported}）")
+        if agent not in seen:
+            selected.append(agent)
+            seen.add(agent)
+
+    if not selected:
+        raise ValueError("--agents 不能为空")
+    return selected
+
+
+def _run_install_command(command: str, timeout_sec: int) -> Tuple[bool, str]:
+    cmd = _split_command(command)
+    try:
+        completed = subprocess.run(
+            cmd,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout_sec,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return False, f"执行失败: {exc}"
+
+    if completed.returncode == 0:
+        return True, completed.stdout.strip()
+
+    stderr = completed.stderr.strip()
+    stdout = completed.stdout.strip()
+    tail = stderr or stdout
+    return False, tail
+
+
+def _install_missing_runner(
+    agent: str,
+    *,
+    timeout_sec: int,
+) -> Tuple[bool, str]:
+    entry = AGENT_CATALOG.get(agent, {})
+    candidates = entry.get("install_commands", [])
+    if not isinstance(candidates, list) or not candidates:
+        return False, "未配置安装命令"
+
+    for command in candidates:
+        if not isinstance(command, str) or not command.strip():
+            continue
+        print(f"[{agent}] 尝试安装 runner: {command}")
+        ok, message = _run_install_command(command, timeout_sec=timeout_sec)
+        if ok:
+            return True, "安装命令执行成功"
+        if message:
+            print(f"[{agent}] 安装失败: {message}", file=sys.stderr)
+
+    return False, "所有安装命令均失败"
 
 
 def _parse_key_value_items(
@@ -537,15 +645,33 @@ def _validate_selected_values(
 def _build_parser() -> argparse.ArgumentParser:
     default_output = Path("~/.acp-subagent-orchestrator/setup.json").expanduser()
     parser = argparse.ArgumentParser(description="生成 ACP 子代理编排器 setup 配置")
+    parser.add_argument(
+        "--list-catalog",
+        action="store_true",
+        help="仅打印预设 subagent 清单并退出",
+    )
+    parser.add_argument(
+        "--agents",
+        default="",
+        help="要配置的 agent，逗号分隔（默认全部）",
+    )
     parser.add_argument("--output", default=str(default_output), help="输出 setup.json 路径")
     parser.add_argument("--cwd", default=".", help="默认工作目录")
     parser.add_argument("--max-parallel", type=int, default=2, help="默认最大并行任务数")
 
-    parser.add_argument("--codex-command", default="codex-acp", help="Codex ACP runner 命令")
-    parser.add_argument("--claude-command", default="claude-agent-acp", help="Claude ACP runner 命令")
+    parser.add_argument(
+        "--codex-command",
+        default=AGENT_CATALOG["codex"]["default_command"],
+        help="Codex ACP runner 命令",
+    )
+    parser.add_argument(
+        "--claude-command",
+        default=AGENT_CATALOG["claude"]["default_command"],
+        help="Claude ACP runner 命令",
+    )
     parser.add_argument(
         "--copilot-command",
-        default="copilot --acp --stdio",
+        default=AGENT_CATALOG["copilot"]["default_command"],
         help="Copilot ACP runner 命令",
     )
 
@@ -603,6 +729,17 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="命令不可执行时直接报错（默认仅警告）",
     )
+    parser.add_argument(
+        "--no-install-missing",
+        action="store_true",
+        help="runner 缺失时不自动安装（默认自动尝试安装）",
+    )
+    parser.add_argument(
+        "--install-timeout",
+        type=int,
+        default=300,
+        help="每条安装命令超时（秒）",
+    )
 
     for agent in AGENTS:
         parser.add_argument(
@@ -628,22 +765,40 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _build_initial_config(args: argparse.Namespace, global_cwd: str, auto_approve: bool) -> Dict[str, object]:
+def _build_initial_config(
+    args: argparse.Namespace,
+    global_cwd: str,
+    auto_approve: bool,
+    selected_agents: List[str],
+) -> Dict[str, object]:
     config: Dict[str, object] = {
         "cwd": global_cwd,
         "max_parallel": args.max_parallel,
         "agents": {},
     }
 
-    for agent in AGENTS:
+    install_missing = not args.no_install_missing
+
+    for agent in selected_agents:
         command_raw = getattr(args, f"{agent}_command")
         command = _split_command(command_raw)
         ok, msg = _check_command_available(command)
         if not ok:
-            text = f"[{agent}] 命令检查失败: {msg}"
-            if args.strict_command_check:
-                raise ValueError(text)
-            print(f"警告: {text}", file=sys.stderr)
+            if install_missing:
+                installed, install_message = _install_missing_runner(
+                    agent,
+                    timeout_sec=args.install_timeout,
+                )
+                if installed:
+                    ok, msg = _check_command_available(command)
+                else:
+                    msg = f"{msg}；自动安装失败: {install_message}"
+
+            if not ok:
+                text = f"[{agent}] 命令检查失败: {msg}"
+                if args.strict_command_check:
+                    raise ValueError(text)
+                print(f"警告: {text}", file=sys.stderr)
 
         env_items = getattr(args, f"{agent}_env")
         env = _parse_key_value_items(
@@ -673,6 +828,7 @@ def _discover_all_agents(
     args: argparse.Namespace,
     config: Dict[str, object],
     global_cwd: str,
+    selected_agents: List[str],
 ) -> Dict[str, DiscoveryResult]:
     if args.no_discover:
         return {}
@@ -683,7 +839,7 @@ def _discover_all_agents(
     agents_cfg = config["agents"]
     assert isinstance(agents_cfg, dict)
 
-    for agent in AGENTS:
+    for agent in selected_agents:
         cfg_any = agents_cfg.get(agent)
         if not isinstance(cfg_any, dict):
             continue
@@ -722,16 +878,18 @@ def _discover_all_agents(
     return discovered
 
 
-def _resolve_mode_overrides(args: argparse.Namespace) -> Dict[str, Optional[str]]:
-    mode_overrides: Dict[str, Optional[str]] = {
-        "codex": args.codex_mode.strip() or None,
-        "claude": args.claude_mode.strip() or None,
-        "copilot": args.copilot_mode.strip() or None,
-    }
+def _resolve_mode_overrides(
+    args: argparse.Namespace,
+    selected_agents: List[str],
+) -> Dict[str, Optional[str]]:
+    mode_overrides: Dict[str, Optional[str]] = {}
+    for agent in selected_agents:
+        raw = getattr(args, f"{agent}_mode")
+        mode_overrides[agent] = raw.strip() or None
 
     if args.all_permissions:
         for agent, mode in ALL_PERMISSIONS_PRESET.items():
-            if mode_overrides.get(agent) is None:
+            if agent in selected_agents and mode_overrides.get(agent) is None:
                 mode_overrides[agent] = mode
 
     return mode_overrides
@@ -781,24 +939,32 @@ def main() -> int:
     parser = _build_parser()
     args = parser.parse_args()
 
+    if args.list_catalog:
+        _print_catalog()
+        return 0
+
     if args.max_parallel <= 0:
         raise ValueError("--max-parallel 必须大于 0")
     if args.discovery_timeout <= 0:
         raise ValueError("--discovery-timeout 必须大于 0")
+    if args.install_timeout <= 0:
+        raise ValueError("--install-timeout 必须大于 0")
+
+    selected_agents = _parse_selected_agents(args.agents)
 
     global_cwd = _resolve_existing_dir(args.cwd, "--cwd")
     auto_approve = not args.manual_permissions
     if args.all_permissions:
         auto_approve = True
 
-    config = _build_initial_config(args, global_cwd, auto_approve)
-    discovered = _discover_all_agents(args, config, global_cwd)
-    mode_overrides = _resolve_mode_overrides(args)
+    config = _build_initial_config(args, global_cwd, auto_approve, selected_agents)
+    discovered = _discover_all_agents(args, config, global_cwd, selected_agents)
+    mode_overrides = _resolve_mode_overrides(args, selected_agents)
 
     agents_cfg = config["agents"]
     assert isinstance(agents_cfg, dict)
 
-    for agent in AGENTS:
+    for agent in selected_agents:
         agent_cfg_any = agents_cfg.get(agent)
         if not isinstance(agent_cfg_any, dict):
             continue
