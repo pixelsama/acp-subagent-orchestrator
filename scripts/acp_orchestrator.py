@@ -717,7 +717,7 @@ def _run_task(
 
         new_result = conn.request(
             "session/new",
-            {"cwd": run_cwd},
+            {"cwd": run_cwd, "mcpServers": []},
             timeout_sec=min(task.timeout_sec, 30),
         )
 

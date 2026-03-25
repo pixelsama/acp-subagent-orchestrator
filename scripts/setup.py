@@ -587,7 +587,12 @@ def _discover_agent(
             },
             timeout_sec=timeout_sec,
         )
-        new_result = conn.request("session/new", {"cwd": cwd}, timeout_sec=timeout_sec)
+        # Newer ACP runners require mcpServers explicitly.
+        new_result = conn.request(
+            "session/new",
+            {"cwd": cwd, "mcpServers": []},
+            timeout_sec=timeout_sec,
+        )
 
         maybe_session = new_result.get("sessionId")
         if isinstance(maybe_session, str) and maybe_session:
