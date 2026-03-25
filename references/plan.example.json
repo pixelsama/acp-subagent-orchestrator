@@ -2,14 +2,22 @@
   "delegation_explicitly_requested": true,
   "cwd": "/Users/pixelsama/Dev/Github/skills-test",
   "max_parallel": 2,
+  "routing": {
+    "frontend": "claude",
+    "backend": "codex",
+    "research": "codex"
+  },
   "tasks": [
     {
       "id": "context-scan",
-      "agent": "codex",
+      "role": "research",
       "priority": "sidecar",
       "depends_on": [],
       "timeout_sec": 600,
       "session_mode": "auto",
+      "ownership": [
+        "只读扫描仓库，不改文件"
+      ],
       "prompt": "扫描仓库并列出对实现功能 X 最相关的 5 个文件。仅输出文件路径，并为每个文件给出一行理由。"
     },
     {
@@ -18,6 +26,9 @@
       "priority": "sidecar",
       "depends_on": [],
       "timeout_sec": 600,
+      "ownership": [
+        "只产出测试策略文档，不改代码"
+      ],
       "session_config_options": {
         "mode": "plan"
       },
@@ -25,11 +36,15 @@
     },
     {
       "id": "patch-impl",
-      "agent": "codex",
+      "role": "backend",
       "priority": "critical",
       "depends_on": ["context-scan", "test-strategy"],
       "timeout_sec": 1200,
       "session_mode": "full-access",
+      "ownership": [
+        "src/backend/**",
+        "tests/backend/**"
+      ],
       "prompt": "以 bounded patch 方式实现功能 X。遵循现有代码风格。输出改动文件列表和行为变化摘要。"
     }
   ]

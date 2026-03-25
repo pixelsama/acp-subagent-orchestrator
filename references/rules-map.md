@@ -26,9 +26,11 @@
 
 - 规则 1：计划必须包含 `delegation_explicitly_requested=true`。
 - 规则 3-5：依赖图 + `critical`/`sidecar` 调度。
+- 规则 7：每个任务必须提供 `ownership`，否则拒绝执行。
 - 规则 14-16：受控并行，依赖就绪后才派发。
 - 规则 18-19：调度循环采用非阻塞轮询，减少无意义等待。
 - 规则 31：任务结束后回收子进程。
+- 自然语言路由：支持 `plan.routing` + `task.role`，将“前端给 Claude”映射到实际 agent。
 - setup 预配置：支持通过 `--setup` 预设 runner、默认 mode、默认 config options、自动审批策略。
 - 会话下发：支持 `session/set_mode` 与 `session/set_config_option`，可由 setup 默认值和 task 局部覆写共同驱动。
 

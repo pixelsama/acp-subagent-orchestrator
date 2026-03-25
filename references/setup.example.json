@@ -1,9 +1,11 @@
 {
   "cwd": "/path/to/workspace",
   "max_parallel": 3,
+  "install_scope": "isolated",
+  "runners_dir": "/Users/you/.acp-subagent-orchestrator/runners",
   "agents": {
     "codex": {
-      "command": ["codex-acp"],
+      "command": ["/Users/you/.acp-subagent-orchestrator/runners/codex/node_modules/.bin/codex-acp"],
       "auto_approve_permissions": true,
       "default_config_options": {
         "mode": "full-access"
@@ -11,7 +13,7 @@
       "strict_session_config": false
     },
     "claude": {
-      "command": ["claude-agent-acp"],
+      "command": ["/Users/you/.acp-subagent-orchestrator/runners/claude/node_modules/.bin/claude-agent-acp"],
       "env": {
         "ANTHROPIC_API_KEY": "$ANTHROPIC_API_KEY"
       },
@@ -22,7 +24,7 @@
       "strict_session_config": false
     },
     "copilot": {
-      "command": ["copilot", "--acp", "--stdio"],
+      "command": ["/Users/you/.acp-subagent-orchestrator/runners/copilot/node_modules/.bin/copilot", "--acp", "--stdio"],
       "auto_approve_permissions": true,
       "strict_session_config": false
     }

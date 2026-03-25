@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 
 AGENTS = ("codex", "claude", "copilot")
+DEFAULT_RUNNERS_DIR = "~/.acp-subagent-orchestrator/runners"
 ALL_PERMISSIONS_PRESET = {
     "codex": "full-access",
     "claude": "bypassPermissions",
@@ -32,6 +33,8 @@ AGENT_CATALOG: Dict[str, Dict[str, Any]] = {
         "label": "Codex ACP",
         "description": "OpenAI Codex ACP runner",
         "default_command": "codex-acp",
+        "isolated_npm_package": "@zed-industries/codex-acp",
+        "isolated_bin": "codex-acp",
         "install_commands": [
             "npm install -g @zed-industries/codex-acp",
         ],
@@ -40,6 +43,8 @@ AGENT_CATALOG: Dict[str, Dict[str, Any]] = {
         "label": "Claude Agent ACP",
         "description": "Anthropic Claude ACP runner",
         "default_command": "claude-agent-acp",
+        "isolated_npm_package": "@zed-industries/claude-agent-acp",
+        "isolated_bin": "claude-agent-acp",
         "install_commands": [
             "npm install -g @zed-industries/claude-agent-acp",
         ],
@@ -48,6 +53,9 @@ AGENT_CATALOG: Dict[str, Dict[str, Any]] = {
         "label": "GitHub Copilot CLI ACP",
         "description": "GitHub Copilot CLI runner with --acp --stdio",
         "default_command": "copilot --acp --stdio",
+        "isolated_npm_package": "@github/copilot",
+        "isolated_bin": "copilot",
+        "isolated_extra_args": ["--acp", "--stdio"],
         "install_commands": [
             "brew install copilot-cli",
             "npm install -g @github/copilot",
@@ -306,6 +314,31 @@ def _parse_selected_agents(raw: str) -> List[str]:
     return selected
 
 
+def _npm_bin_name(base: str) -> str:
+    if os.name == "nt":
+        return f"{base}.cmd"
+    return base
+
+
+def _default_isolated_base_dir(path_like: str) -> Path:
+    return Path(_expand_env(path_like)).expanduser().resolve()
+
+
+def _build_isolated_runner_command(agent: str, runners_dir: Path) -> List[str]:
+    meta = AGENT_CATALOG[agent]
+    base = runners_dir / agent
+    bin_name = _npm_bin_name(str(meta["isolated_bin"]))
+    runner_bin = base / "node_modules" / ".bin" / bin_name
+    command = [str(runner_bin)]
+    command.extend(meta.get("isolated_extra_args", []))
+    return command
+
+
+def _command_uses_default_runner(agent: str, command_raw: str) -> bool:
+    default_cmd = AGENT_CATALOG[agent]["default_command"]
+    return command_raw.strip() == default_cmd
+
+
 def _run_install_command(command: str, timeout_sec: int) -> Tuple[bool, str]:
     cmd = _split_command(command)
     try:
@@ -328,7 +361,7 @@ def _run_install_command(command: str, timeout_sec: int) -> Tuple[bool, str]:
     return False, tail
 
 
-def _install_missing_runner(
+def _install_missing_runner_global(
     agent: str,
     *,
     timeout_sec: int,
@@ -351,6 +384,55 @@ def _install_missing_runner(
     return False, "所有安装命令均失败"
 
 
+def _install_missing_runner_isolated(
+    agent: str,
+    *,
+    runners_dir: Path,
+    timeout_sec: int,
+) -> Tuple[bool, str, List[str]]:
+    package_name = AGENT_CATALOG[agent].get("isolated_npm_package")
+    if not isinstance(package_name, str) or not package_name:
+        return False, "未配置 isolated npm 包", []
+
+    npm_bin = shutil.which("npm")
+    if npm_bin is None:
+        return False, "npm 不可用，无法进行隔离安装", []
+
+    install_dir = (runners_dir / agent).resolve()
+    install_dir.mkdir(parents=True, exist_ok=True)
+
+    command = [
+        npm_bin,
+        "install",
+        "--prefix",
+        str(install_dir),
+        package_name,
+    ]
+    print(f"[{agent}] 尝试隔离安装 runner: {' '.join(shlex.quote(x) for x in command)}")
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout_sec,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return False, f"执行失败: {exc}", []
+
+    if completed.returncode != 0:
+        stderr = completed.stderr.strip()
+        stdout = completed.stdout.strip()
+        return False, (stderr or stdout or "npm install 失败"), []
+
+    isolated_command = _build_isolated_runner_command(agent, runners_dir)
+    ok, msg = _check_command_available(isolated_command)
+    if not ok:
+        return False, f"隔离安装完成但 runner 不可执行: {msg}", []
+
+    return True, "隔离安装成功", isolated_command
+
+
 def _parse_key_value_items(
     items: List[str],
     flag_name: str,
@@ -370,6 +452,26 @@ def _parse_key_value_items(
         if not allow_empty_value and not value:
             raise ValueError(f"{flag_name} 的 VALUE 不能为空: {raw}")
         result[key] = _expand_env(value) if expand_value else value
+    return result
+
+
+def _parse_key_int_items(items: List[str], flag_name: str) -> Dict[str, int]:
+    result: Dict[str, int] = {}
+    for raw in items:
+        if "=" not in raw:
+            raise ValueError(f"{flag_name} 必须是 KEY=INDEX 形式: {raw}")
+        key, value = raw.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            raise ValueError(f"{flag_name} 的 KEY 不能为空: {raw}")
+        try:
+            idx = int(value)
+        except Exception as exc:  # noqa: BLE001
+            raise ValueError(f"{flag_name} 的 INDEX 必须是整数: {raw}") from exc
+        if idx <= 0:
+            raise ValueError(f"{flag_name} 的 INDEX 必须大于 0: {raw}")
+        result[key] = idx
     return result
 
 
@@ -577,8 +679,9 @@ def _print_discovery(agent: str, result: DiscoveryResult) -> None:
         current = option.current_value or "(none)"
         print(f"  - {option.id} [{category}] current={current}")
         if option.choices:
-            values = ", ".join(option.choices.keys())
-            print(f"    choices: {values}")
+            print("    choices:")
+            for idx, (value, name) in enumerate(option.choices.items(), start=1):
+                print(f"      {idx}. {name} ({value})")
 
 
 def _interactive_select(
@@ -642,6 +745,52 @@ def _validate_selected_values(
             )
 
 
+def _resolve_index_overrides(
+    agent: str,
+    index_overrides: Dict[str, int],
+    discovered_options: List[DiscoveredOption],
+) -> Dict[str, str]:
+    if not index_overrides:
+        return {}
+    by_id = _option_map(discovered_options)
+    resolved: Dict[str, str] = {}
+
+    for config_id, idx in index_overrides.items():
+        option = by_id.get(config_id)
+        if option is None or not option.choices:
+            raise ValueError(f"[{agent}] {config_id} 不存在或无可选项，无法按编号选择")
+        values = list(option.choices.keys())
+        if idx < 1 or idx > len(values):
+            raise ValueError(f"[{agent}] {config_id} 的编号越界: {idx}（范围 1-{len(values)}）")
+        resolved[config_id] = values[idx - 1]
+
+    return resolved
+
+
+def _discovery_snapshot(discovered: Dict[str, DiscoveryResult]) -> Dict[str, Any]:
+    snapshot: Dict[str, Any] = {}
+    for agent, result in discovered.items():
+        option_items: List[Dict[str, Any]] = []
+        for option in result.options:
+            choices: List[Dict[str, Any]] = []
+            for idx, (value, name) in enumerate(option.choices.items(), start=1):
+                choices.append({"index": idx, "value": value, "name": name})
+            option_items.append(
+                {
+                    "id": option.id,
+                    "name": option.name,
+                    "category": option.category,
+                    "current_value": option.current_value,
+                    "choices": choices,
+                }
+            )
+        snapshot[agent] = {
+            "warning": result.warning,
+            "options": option_items,
+        }
+    return snapshot
+
+
 def _build_parser() -> argparse.ArgumentParser:
     default_output = Path("~/.acp-subagent-orchestrator/setup.json").expanduser()
     parser = argparse.ArgumentParser(description="生成 ACP 子代理编排器 setup 配置")
@@ -658,6 +807,17 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", default=str(default_output), help="输出 setup.json 路径")
     parser.add_argument("--cwd", default=".", help="默认工作目录")
     parser.add_argument("--max-parallel", type=int, default=2, help="默认最大并行任务数")
+    parser.add_argument(
+        "--install-scope",
+        choices=("isolated", "global", "auto"),
+        default="isolated",
+        help="runner 安装范围：isolated(默认，隔离目录)、global(系统全局)、auto(先隔离再全局兜底)",
+    )
+    parser.add_argument(
+        "--runners-dir",
+        default=DEFAULT_RUNNERS_DIR,
+        help="隔离 runner 根目录（install-scope=isolated/auto 时使用）",
+    )
 
     parser.add_argument(
         "--codex-command",
@@ -761,6 +921,13 @@ def _build_parser() -> argparse.ArgumentParser:
             metavar="KEY=VALUE",
             help=f"{agent} 的默认 session config 选项，可重复传入",
         )
+        parser.add_argument(
+            f"--{agent}-config-index",
+            action="append",
+            default=[],
+            metavar="KEY=INDEX",
+            help=f"{agent} 的默认 session config 选项，可用编号选择（1-based）",
+        )
 
     return parser
 
@@ -771,9 +938,12 @@ def _build_initial_config(
     auto_approve: bool,
     selected_agents: List[str],
 ) -> Dict[str, object]:
+    runners_dir = _default_isolated_base_dir(args.runners_dir)
     config: Dict[str, object] = {
         "cwd": global_cwd,
         "max_parallel": args.max_parallel,
+        "install_scope": args.install_scope,
+        "runners_dir": str(runners_dir),
         "agents": {},
     }
 
@@ -781,18 +951,47 @@ def _build_initial_config(
 
     for agent in selected_agents:
         command_raw = getattr(args, f"{agent}_command")
-        command = _split_command(command_raw)
+        use_isolated_default = (
+            args.install_scope in {"isolated", "auto"}
+            and _command_uses_default_runner(agent, command_raw)
+        )
+
+        if use_isolated_default:
+            command = _build_isolated_runner_command(agent, runners_dir)
+        else:
+            command = _split_command(command_raw)
+
         ok, msg = _check_command_available(command)
         if not ok:
+            install_failures: List[str] = []
             if install_missing:
-                installed, install_message = _install_missing_runner(
-                    agent,
-                    timeout_sec=args.install_timeout,
-                )
-                if installed:
+                if args.install_scope in {"isolated", "auto"} and use_isolated_default:
+                    installed, install_message, installed_command = _install_missing_runner_isolated(
+                        agent,
+                        runners_dir=runners_dir,
+                        timeout_sec=args.install_timeout,
+                    )
+                    if installed:
+                        command = installed_command
+                        ok, msg = _check_command_available(command)
+                    else:
+                        install_failures.append(f"隔离安装失败: {install_message}")
+
+                if not ok and args.install_scope in {"global", "auto"}:
+                    command = _split_command(command_raw)
                     ok, msg = _check_command_available(command)
-                else:
-                    msg = f"{msg}；自动安装失败: {install_message}"
+                    if not ok:
+                        installed, install_message = _install_missing_runner_global(
+                            agent,
+                            timeout_sec=args.install_timeout,
+                        )
+                        if installed:
+                            ok, msg = _check_command_available(command)
+                        else:
+                            install_failures.append(f"全局安装失败: {install_message}")
+
+            if install_failures:
+                msg = f"{msg}；{'; '.join(install_failures)}"
 
             if not ok:
                 text = f"[{agent}] 命令检查失败: {msg}"
@@ -902,6 +1101,7 @@ def _apply_agent_defaults(
     discovered: Optional[DiscoveryResult],
     mode_override: Optional[str],
     cli_config_overrides: Dict[str, str],
+    cli_config_index_overrides: Dict[str, int],
     interactive: bool,
     interactive_all_options: bool,
     emit_default_mode: bool,
@@ -917,6 +1117,12 @@ def _apply_agent_defaults(
         selected["mode"] = mode_override
 
     selected.update(cli_config_overrides)
+    if cli_config_index_overrides:
+        if discovered is None:
+            raise ValueError(f"[{agent}] 未进行动态发现，无法使用编号选择配置项")
+        selected.update(
+            _resolve_index_overrides(agent, cli_config_index_overrides, discovered.options)
+        )
 
     if interactive and discovered is not None:
         _interactive_select(
@@ -959,6 +1165,8 @@ def main() -> int:
 
     config = _build_initial_config(args, global_cwd, auto_approve, selected_agents)
     discovered = _discover_all_agents(args, config, global_cwd, selected_agents)
+    if discovered:
+        config["discovery"] = _discovery_snapshot(discovered)
     mode_overrides = _resolve_mode_overrides(args, selected_agents)
 
     agents_cfg = config["agents"]
@@ -974,12 +1182,17 @@ def main() -> int:
             allow_empty_value=False,
             expand_value=True,
         )
+        cli_config_index_overrides = _parse_key_int_items(
+            getattr(args, f"{agent}_config_index"),
+            f"--{agent}-config-index",
+        )
         _apply_agent_defaults(
             agent=agent,
             agent_cfg=agent_cfg_any,
             discovered=discovered.get(agent),
             mode_override=mode_overrides.get(agent),
             cli_config_overrides=cli_config_overrides,
+            cli_config_index_overrides=cli_config_index_overrides,
             interactive=args.interactive,
             interactive_all_options=args.interactive_all_options,
             emit_default_mode=args.emit_default_mode,

@@ -49,7 +49,9 @@ class AgentConfig:
 class TaskSpec:
     id: str
     agent: str
+    role: Optional[str]
     prompt: str
+    ownership: List[str]
     priority: str = "sidecar"
     depends_on: List[str] = field(default_factory=list)
     timeout_sec: int = 900
@@ -469,7 +471,39 @@ def _parse_agent_configs(plan: Dict[str, Any], setup: Dict[str, Any]) -> Dict[st
     return result
 
 
-def _parse_tasks(plan: Dict[str, Any]) -> List[TaskSpec]:
+def _parse_routing(plan: Dict[str, Any]) -> Dict[str, str]:
+    raw = plan.get("routing", {})
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ACPError("plan.routing 必须是对象")
+    routing: Dict[str, str] = {}
+    for role, agent in raw.items():
+        if not isinstance(role, str) or not role.strip():
+            raise ACPError("plan.routing 的键必须是非空字符串")
+        if not isinstance(agent, str) or not agent.strip():
+            raise ACPError(f"plan.routing.{role} 的值必须是非空字符串")
+        routing[role.strip()] = agent.strip()
+    return routing
+
+
+def _parse_ownership(raw: Any, task_id: str) -> List[str]:
+    if isinstance(raw, str):
+        value = raw.strip()
+        if not value:
+            raise ACPError(f"task {task_id}.ownership 不能为空")
+        return [value]
+
+    if isinstance(raw, list) and all(isinstance(x, str) for x in raw):
+        normalized = [x.strip() for x in raw if x.strip()]
+        if not normalized:
+            raise ACPError(f"task {task_id}.ownership 不能为空")
+        return normalized
+
+    raise ACPError(f"task {task_id}.ownership 必须是字符串或字符串数组")
+
+
+def _parse_tasks(plan: Dict[str, Any], routing: Dict[str, str]) -> List[TaskSpec]:
     tasks: List[TaskSpec] = []
     seen: set[str] = set()
 
@@ -485,9 +519,23 @@ def _parse_tasks(plan: Dict[str, Any]) -> List[TaskSpec]:
         seen.add(task_id)
 
         agent = str(raw.get("agent", "")).strip()
+        role_raw = raw.get("role")
+        role: Optional[str] = None
+        if isinstance(role_raw, str) and role_raw.strip():
+            role = role_raw.strip()
         prompt = str(raw.get("prompt", "")).strip()
-        if not agent or not prompt:
-            raise ACPError(f"task {task_id} 必须提供非空的 agent 和 prompt")
+        if not prompt:
+            raise ACPError(f"task {task_id} 必须提供非空的 prompt")
+
+        if not agent:
+            if role is None:
+                raise ACPError(f"task {task_id} 必须提供 agent，或提供可路由的 role")
+            mapped_agent = routing.get(role)
+            if not mapped_agent:
+                raise ACPError(f"task {task_id}.role={role} 在 plan.routing 中未配置映射")
+            agent = mapped_agent
+
+        ownership = _parse_ownership(raw.get("ownership"), task_id)
 
         depends_any = raw.get("depends_on", [])
         if not isinstance(depends_any, list) or not all(isinstance(x, str) for x in depends_any):
@@ -528,7 +576,9 @@ def _parse_tasks(plan: Dict[str, Any]) -> List[TaskSpec]:
             TaskSpec(
                 id=task_id,
                 agent=agent,
+                role=role,
                 prompt=prompt,
+                ownership=ownership,
                 priority=priority,
                 depends_on=depends_any,
                 timeout_sec=timeout_sec,
@@ -613,6 +663,19 @@ def _apply_session_settings(
         )
 
 
+def _build_task_prompt(task: TaskSpec) -> str:
+    ownership_lines = "\n".join(f"- {item}" for item in task.ownership)
+    guardrail = (
+        "\n\n执行约束:\n"
+        "1. 仅在 ownership 范围内修改。\n"
+        "2. 你不是独占代码库，不得回滚他人改动。\n"
+        "3. 输出改动文件路径列表和关键变更摘要。\n"
+        "ownership:\n"
+        f"{ownership_lines}"
+    )
+    return task.prompt.rstrip() + guardrail
+
+
 def _run_task(
     task: TaskSpec,
     agent_cfg: AgentConfig,
@@ -668,7 +731,7 @@ def _run_task(
             "session/prompt",
             {
                 "sessionId": session_id,
-                "prompt": [{"type": "text", "text": task.prompt}],
+                "prompt": [{"type": "text", "text": _build_task_prompt(task)}],
             },
             timeout_sec=task.timeout_sec,
         )
@@ -835,7 +898,8 @@ def main() -> int:
         raise ACPError("max_parallel 必须大于等于 1")
 
     agents = _parse_agent_configs(plan, setup)
-    tasks = _parse_tasks(plan)
+    routing = _parse_routing(plan)
+    tasks = _parse_tasks(plan, routing)
 
     started = time.time()
     results = _execute_plan(
@@ -859,6 +923,7 @@ def main() -> int:
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "cwd": default_cwd,
         "max_parallel": max_parallel,
+        "routing": routing,
         "setup": str(setup_path) if setup_path else None,
         "summary": summary,
         "results": [asdict(r) for r in results],
