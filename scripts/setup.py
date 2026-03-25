@@ -23,7 +23,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 
 AGENTS = ("codex", "claude", "copilot")
-DEFAULT_RUNNERS_DIR = "~/.acp-subagent-orchestrator/runners"
+SKILL_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_RUNNERS_DIR = str((SKILL_ROOT / ".runtime" / "runners").resolve())
 ALL_PERMISSIONS_PRESET = {
     "codex": "full-access",
     "claude": "bypassPermissions",
@@ -35,9 +36,6 @@ AGENT_CATALOG: Dict[str, Dict[str, Any]] = {
         "default_command": "codex-acp",
         "isolated_npm_package": "@zed-industries/codex-acp",
         "isolated_bin": "codex-acp",
-        "install_commands": [
-            "npm install -g @zed-industries/codex-acp",
-        ],
     },
     "claude": {
         "label": "Claude Agent ACP",
@@ -45,9 +43,6 @@ AGENT_CATALOG: Dict[str, Dict[str, Any]] = {
         "default_command": "claude-agent-acp",
         "isolated_npm_package": "@zed-industries/claude-agent-acp",
         "isolated_bin": "claude-agent-acp",
-        "install_commands": [
-            "npm install -g @zed-industries/claude-agent-acp",
-        ],
     },
     "copilot": {
         "label": "GitHub Copilot CLI ACP",
@@ -56,10 +51,6 @@ AGENT_CATALOG: Dict[str, Dict[str, Any]] = {
         "isolated_npm_package": "@github/copilot",
         "isolated_bin": "copilot",
         "isolated_extra_args": ["--acp", "--stdio"],
-        "install_commands": [
-            "brew install copilot-cli",
-            "npm install -g @github/copilot",
-        ],
     },
 }
 
@@ -285,11 +276,9 @@ def _print_catalog() -> None:
         print(f"- {agent}: {item['label']}")
         print(f"  描述: {item['description']}")
         print(f"  默认命令: {item['default_command']}")
-        installs = item.get("install_commands", [])
-        if installs:
-            print("  安装命令候选:")
-            for cmd in installs:
-                print(f"    - {cmd}")
+        pkg = item.get("isolated_npm_package")
+        if isinstance(pkg, str) and pkg:
+            print(f"  隔离安装包: {pkg}")
 
 
 def _parse_selected_agents(raw: str) -> List[str]:
@@ -337,51 +326,6 @@ def _build_isolated_runner_command(agent: str, runners_dir: Path) -> List[str]:
 def _command_uses_default_runner(agent: str, command_raw: str) -> bool:
     default_cmd = AGENT_CATALOG[agent]["default_command"]
     return command_raw.strip() == default_cmd
-
-
-def _run_install_command(command: str, timeout_sec: int) -> Tuple[bool, str]:
-    cmd = _split_command(command)
-    try:
-        completed = subprocess.run(
-            cmd,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=timeout_sec,
-        )
-    except Exception as exc:  # noqa: BLE001
-        return False, f"执行失败: {exc}"
-
-    if completed.returncode == 0:
-        return True, completed.stdout.strip()
-
-    stderr = completed.stderr.strip()
-    stdout = completed.stdout.strip()
-    tail = stderr or stdout
-    return False, tail
-
-
-def _install_missing_runner_global(
-    agent: str,
-    *,
-    timeout_sec: int,
-) -> Tuple[bool, str]:
-    entry = AGENT_CATALOG.get(agent, {})
-    candidates = entry.get("install_commands", [])
-    if not isinstance(candidates, list) or not candidates:
-        return False, "未配置安装命令"
-
-    for command in candidates:
-        if not isinstance(command, str) or not command.strip():
-            continue
-        print(f"[{agent}] 尝试安装 runner: {command}")
-        ok, message = _run_install_command(command, timeout_sec=timeout_sec)
-        if ok:
-            return True, "安装命令执行成功"
-        if message:
-            print(f"[{agent}] 安装失败: {message}", file=sys.stderr)
-
-    return False, "所有安装命令均失败"
 
 
 def _install_missing_runner_isolated(
@@ -809,14 +753,14 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-parallel", type=int, default=2, help="默认最大并行任务数")
     parser.add_argument(
         "--install-scope",
-        choices=("isolated", "global", "auto"),
+        choices=("isolated",),
         default="isolated",
-        help="runner 安装范围：isolated(默认，隔离目录)、global(系统全局)、auto(先隔离再全局兜底)",
+        help="runner 安装范围：isolated（仅隔离安装，禁止全局安装）",
     )
     parser.add_argument(
         "--runners-dir",
         default=DEFAULT_RUNNERS_DIR,
-        help="隔离 runner 根目录（install-scope=isolated/auto 时使用）",
+        help="隔离 runner 根目录（默认: skill/.runtime/runners）",
     )
 
     parser.add_argument(
@@ -946,7 +890,7 @@ def _build_initial_config(
             "setup": {
                 "install_scope": args.install_scope,
                 "runners_dir": str(runners_dir),
-                "note": "仅 setup 阶段使用；acp_orchestrator 运行期忽略该字段。",
+                "note": "仅 setup 阶段使用；runner 默认安装在 skill/.runtime/runners，且禁止自动全局安装。acp_orchestrator 运行期忽略该字段。",
             }
         },
         "agents": {},
@@ -956,10 +900,7 @@ def _build_initial_config(
 
     for agent in selected_agents:
         command_raw = getattr(args, f"{agent}_command")
-        use_isolated_default = (
-            args.install_scope in {"isolated", "auto"}
-            and _command_uses_default_runner(agent, command_raw)
-        )
+        use_isolated_default = _command_uses_default_runner(agent, command_raw)
 
         if use_isolated_default:
             command = _build_isolated_runner_command(agent, runners_dir)
@@ -970,7 +911,7 @@ def _build_initial_config(
         if not ok:
             install_failures: List[str] = []
             if install_missing:
-                if args.install_scope in {"isolated", "auto"} and use_isolated_default:
+                if use_isolated_default:
                     installed, install_message, installed_command = _install_missing_runner_isolated(
                         agent,
                         runners_dir=runners_dir,
@@ -981,19 +922,6 @@ def _build_initial_config(
                         ok, msg = _check_command_available(command)
                     else:
                         install_failures.append(f"隔离安装失败: {install_message}")
-
-                if not ok and args.install_scope in {"global", "auto"}:
-                    command = _split_command(command_raw)
-                    ok, msg = _check_command_available(command)
-                    if not ok:
-                        installed, install_message = _install_missing_runner_global(
-                            agent,
-                            timeout_sec=args.install_timeout,
-                        )
-                        if installed:
-                            ok, msg = _check_command_available(command)
-                        else:
-                            install_failures.append(f"全局安装失败: {install_message}")
 
             if install_failures:
                 msg = f"{msg}；{'; '.join(install_failures)}"

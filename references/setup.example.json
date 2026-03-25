@@ -4,8 +4,8 @@
   "_meta": {
     "setup": {
       "install_scope": "isolated",
-      "runners_dir": "/Users/you/.acp-subagent-orchestrator/runners",
-      "note": "仅 setup 阶段使用；acp_orchestrator 运行期忽略该字段。"
+      "runners_dir": "/path/to/acp-subagent-orchestrator/.runtime/runners",
+      "note": "仅 setup 阶段使用；runner 默认安装在 skill/.runtime/runners，且禁止自动全局安装。acp_orchestrator 运行期忽略该字段。"
     }
   },
   "agents": {
