@@ -1,8 +1,13 @@
 {
   "cwd": "/path/to/workspace",
   "max_parallel": 3,
-  "install_scope": "isolated",
-  "runners_dir": "/Users/you/.acp-subagent-orchestrator/runners",
+  "_meta": {
+    "setup": {
+      "install_scope": "isolated",
+      "runners_dir": "/Users/you/.acp-subagent-orchestrator/runners",
+      "note": "仅 setup 阶段使用；acp_orchestrator 运行期忽略该字段。"
+    }
+  },
   "agents": {
     "codex": {
       "command": ["/Users/you/.acp-subagent-orchestrator/runners/codex/node_modules/.bin/codex-acp"],

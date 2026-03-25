@@ -942,8 +942,13 @@ def _build_initial_config(
     config: Dict[str, object] = {
         "cwd": global_cwd,
         "max_parallel": args.max_parallel,
-        "install_scope": args.install_scope,
-        "runners_dir": str(runners_dir),
+        "_meta": {
+            "setup": {
+                "install_scope": args.install_scope,
+                "runners_dir": str(runners_dir),
+                "note": "仅 setup 阶段使用；acp_orchestrator 运行期忽略该字段。",
+            }
+        },
         "agents": {},
     }
 
