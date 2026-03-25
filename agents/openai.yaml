@@ -1,4 +1,4 @@
 interface:
   display_name: "ACP 子代理编排器"
   short_description: "用 ACP 把有边界子任务委派给外部 Agent，支持 setup 预配置权限。"
-  default_prompt: "先执行 /setup（或 setup.py）预设 runner 与权限模式，再按关键路径与 sidecar 拆分任务，通过 ACP 委派并安全集成结果。"
+  default_prompt: "当用户要求配置 subagent 时，先由 Agent 调用 setup.py 完成清单展示、runner 安装与连通探测、权限配置写入；随后再按关键路径与 sidecar 规则进行 ACP 委派。"
