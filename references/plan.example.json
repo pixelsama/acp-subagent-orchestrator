@@ -1,0 +1,36 @@
+{
+  "delegation_explicitly_requested": true,
+  "cwd": "/Users/pixelsama/Dev/Github/skills-test",
+  "max_parallel": 2,
+  "tasks": [
+    {
+      "id": "context-scan",
+      "agent": "codex",
+      "priority": "sidecar",
+      "depends_on": [],
+      "timeout_sec": 600,
+      "session_mode": "auto",
+      "prompt": "扫描仓库并列出对实现功能 X 最相关的 5 个文件。仅输出文件路径，并为每个文件给出一行理由。"
+    },
+    {
+      "id": "test-strategy",
+      "agent": "claude",
+      "priority": "sidecar",
+      "depends_on": [],
+      "timeout_sec": 600,
+      "session_config_options": {
+        "mode": "plan"
+      },
+      "prompt": "为功能 X 给出有边界的测试方案。包含需要新增或修改的具体测试文件，以及主要失败风险。"
+    },
+    {
+      "id": "patch-impl",
+      "agent": "codex",
+      "priority": "critical",
+      "depends_on": ["context-scan", "test-strategy"],
+      "timeout_sec": 1200,
+      "session_mode": "full-access",
+      "prompt": "以 bounded patch 方式实现功能 X。遵循现有代码风格。输出改动文件列表和行为变化摘要。"
+    }
+  ]
+}
