@@ -80,12 +80,16 @@ class ACPConnection:
         env: Dict[str, str],
         cwd: str,
         auto_approve_permissions: bool,
+        heartbeat_enabled: bool = True,
+        heartbeat_interval_sec: int = 60,
         verbose: bool = False,
     ) -> None:
         self.command = command
         self.env = env
         self.cwd = cwd
         self.auto_approve_permissions = auto_approve_permissions
+        self.heartbeat_enabled = heartbeat_enabled
+        self.heartbeat_interval_sec = max(5, int(heartbeat_interval_sec))
         self.verbose = verbose
 
         self.process: Optional[subprocess.Popen[str]] = None
@@ -95,6 +99,8 @@ class ACPConnection:
         self.updates: List[Dict[str, Any]] = []
         self.text_chunks: List[str] = []
         self.stderr_lines: List[str] = []
+        self.notification_count = 0
+        self.last_notification_monotonic = time.monotonic()
 
     def start(self) -> None:
         if self.process is not None:
@@ -125,7 +131,13 @@ class ACPConnection:
                 self.process.wait(timeout=2)
         self.process = None
 
-    def request(self, method: str, params: Dict[str, Any], timeout_sec: int) -> Dict[str, Any]:
+    def request(
+        self,
+        method: str,
+        params: Dict[str, Any],
+        timeout_sec: int,
+        heartbeat_label: Optional[str] = None,
+    ) -> Dict[str, Any]:
         if self.process is None or self.process.stdin is None:
             raise ACPError("进程尚未启动")
 
@@ -142,12 +154,37 @@ class ACPConnection:
         )
 
         deadline = time.time() + timeout_sec
+        start_monotonic = time.monotonic()
+        next_heartbeat_monotonic = start_monotonic + self.heartbeat_interval_sec
         while True:
             remaining = deadline - time.time()
             if remaining <= 0:
                 raise ACPError(f"等待 {method} 响应超时")
 
-            msg = self._next_message(timeout=remaining)
+            wait_timeout = remaining
+            if heartbeat_label and self.heartbeat_enabled and not self.verbose:
+                wait_timeout = min(wait_timeout, self.heartbeat_interval_sec)
+
+            try:
+                msg = self._next_message(timeout=wait_timeout)
+            except queue.Empty:
+                if (
+                    heartbeat_label
+                    and self.heartbeat_enabled
+                    and not self.verbose
+                    and time.monotonic() >= next_heartbeat_monotonic
+                ):
+                    elapsed_sec = int(time.monotonic() - start_monotonic)
+                    idle_sec = int(time.monotonic() - self.last_notification_monotonic)
+                    print(
+                        f"[{heartbeat_label}] running {elapsed_sec}s, "
+                        f"updates={self.notification_count}, idle={idle_sec}s",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    next_heartbeat_monotonic += self.heartbeat_interval_sec
+                continue
+
             if msg is None:
                 raise ACPError("Agent 进程意外关闭了 stdout")
 
@@ -180,10 +217,7 @@ class ACPConnection:
         self.process.stdin.flush()
 
     def _next_message(self, timeout: float) -> Optional[Dict[str, Any]]:
-        try:
-            return self._queue.get(timeout=timeout)
-        except queue.Empty:
-            return None
+        return self._queue.get(timeout=timeout)
 
     def _read_stdout(self) -> None:
         assert self.process is not None and self.process.stdout is not None
@@ -222,6 +256,9 @@ class ACPConnection:
                 print(f"[acp-stderr] {line}", file=sys.stderr)
 
     def _handle_notification(self, msg: Dict[str, Any]) -> None:
+        self.notification_count += 1
+        self.last_notification_monotonic = time.monotonic()
+
         method = msg.get("method")
         if method == "_internal/error":
             raise ACPError(msg.get("params", {}).get("message", "内部传输错误"))
@@ -680,6 +717,8 @@ def _run_task(
     task: TaskSpec,
     agent_cfg: AgentConfig,
     default_cwd: str,
+    heartbeat_enabled: bool,
+    heartbeat_interval_sec: int,
     verbose: bool,
 ) -> TaskResult:
     started = time.time()
@@ -695,6 +734,8 @@ def _run_task(
         env=env,
         cwd=run_cwd,
         auto_approve_permissions=agent_cfg.auto_approve_permissions,
+        heartbeat_enabled=heartbeat_enabled,
+        heartbeat_interval_sec=heartbeat_interval_sec,
         verbose=verbose,
     )
 
@@ -734,6 +775,7 @@ def _run_task(
                 "prompt": [{"type": "text", "text": _build_task_prompt(task)}],
             },
             timeout_sec=task.timeout_sec,
+            heartbeat_label=task.id,
         )
 
         stop_reason: Optional[str] = None
@@ -776,6 +818,8 @@ def _execute_plan(
     agents: Dict[str, AgentConfig],
     default_cwd: str,
     max_parallel: int,
+    heartbeat_enabled: bool,
+    heartbeat_interval_sec: int,
     verbose: bool,
 ) -> List[TaskResult]:
     task_by_id = {t.id: t for t in tasks}
@@ -833,7 +877,15 @@ def _execute_plan(
                     del pending[task.id]
                     continue
 
-                future = pool.submit(_run_task, task, agent_cfg, default_cwd, verbose)
+                future = pool.submit(
+                    _run_task,
+                    task,
+                    agent_cfg,
+                    default_cwd,
+                    heartbeat_enabled,
+                    heartbeat_interval_sec,
+                    verbose,
+                )
                 running[future] = task
                 del pending[task.id]
                 launched_any = True
@@ -872,6 +924,16 @@ def main() -> int:
     parser.add_argument("--setup", help="setup JSON 文件路径（可选）")
     parser.add_argument("--output", help="输出报告 JSON 文件路径")
     parser.add_argument("--max-parallel", type=int, help="覆盖最大并行任务数")
+    parser.add_argument(
+        "--heartbeat-interval-sec",
+        type=int,
+        help="等待 session/prompt 时的心跳间隔秒数（默认 60）",
+    )
+    parser.add_argument(
+        "--no-heartbeat",
+        action="store_true",
+        help="关闭等待期间心跳日志",
+    )
     parser.add_argument("--verbose", action="store_true", help="打印 ACP 通信日志")
     args = parser.parse_args()
 
@@ -897,6 +959,18 @@ def main() -> int:
     if max_parallel <= 0:
         raise ACPError("max_parallel 必须大于等于 1")
 
+    heartbeat_enabled = bool(plan.get("heartbeat_enabled", setup.get("heartbeat_enabled", True)))
+    if args.no_heartbeat:
+        heartbeat_enabled = False
+
+    heartbeat_interval_sec = int(
+        plan.get("heartbeat_interval_sec", setup.get("heartbeat_interval_sec", 60))
+    )
+    if args.heartbeat_interval_sec is not None:
+        heartbeat_interval_sec = args.heartbeat_interval_sec
+    if heartbeat_interval_sec <= 0:
+        raise ACPError("heartbeat_interval_sec 必须大于等于 1")
+
     agents = _parse_agent_configs(plan, setup)
     routing = _parse_routing(plan)
     tasks = _parse_tasks(plan, routing)
@@ -907,6 +981,8 @@ def main() -> int:
         agents=agents,
         default_cwd=default_cwd,
         max_parallel=max_parallel,
+        heartbeat_enabled=heartbeat_enabled,
+        heartbeat_interval_sec=heartbeat_interval_sec,
         verbose=args.verbose,
     )
     elapsed = round(time.time() - started, 3)
