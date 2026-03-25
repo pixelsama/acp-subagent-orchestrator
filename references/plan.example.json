@@ -2,6 +2,9 @@
   "delegation_explicitly_requested": true,
   "cwd": "/Users/pixelsama/Dev/Github/skills-test",
   "max_parallel": 2,
+  "status_file": "/tmp/acp-example-status.json",
+  "status_interval_sec": 15,
+  "heartbeat_interval_sec": 60,
   "routing": {
     "frontend": "claude",
     "backend": "codex",
