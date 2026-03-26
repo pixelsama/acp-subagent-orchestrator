@@ -15,44 +15,101 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tarfile
+import tempfile
 import threading
 import time
+import urllib.request
+import zipfile
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional, Tuple
 
 
-AGENTS = ("codex", "claude", "copilot")
 SKILL_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_RUNNERS_DIR = str((SKILL_ROOT / ".runtime" / "runners").resolve())
+CATEGORY_FILE = SKILL_ROOT / "references" / "agent_catalog.json"
 ALL_PERMISSIONS_PRESET = {
     "codex": "full-access",
     "claude": "bypassPermissions",
 }
-AGENT_CATALOG: Dict[str, Dict[str, Any]] = {
-    "codex": {
-        "label": "Codex ACP",
-        "description": "OpenAI Codex ACP runner",
-        "default_command": "codex-acp",
-        "isolated_npm_package": "@zed-industries/codex-acp",
-        "isolated_bin": "codex-acp",
-    },
-    "claude": {
-        "label": "Claude Agent ACP",
-        "description": "Anthropic Claude ACP runner",
-        "default_command": "claude-agent-acp",
-        "isolated_npm_package": "@zed-industries/claude-agent-acp",
-        "isolated_bin": "claude-agent-acp",
-    },
-    "copilot": {
-        "label": "GitHub Copilot CLI ACP",
-        "description": "GitHub Copilot CLI runner with --acp --stdio",
-        "default_command": "copilot --acp --stdio",
-        "isolated_npm_package": "@github/copilot",
-        "isolated_bin": "copilot",
-        "isolated_extra_args": ["--acp", "--stdio"],
-    },
-}
+
+
+def _load_agent_catalog() -> Dict[str, Dict[str, Any]]:
+    if not CATEGORY_FILE.exists():
+        raise RuntimeError(f"找不到 agent catalog 文件: {CATEGORY_FILE}")
+    try:
+        payload = json.loads(CATEGORY_FILE.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"读取 agent catalog 失败: {CATEGORY_FILE}") from exc
+
+    order = payload.get("order")
+    agents = payload.get("agents")
+    if not isinstance(order, list) or not isinstance(agents, dict):
+        raise RuntimeError(f"agent catalog 格式错误: {CATEGORY_FILE}")
+
+    catalog: Dict[str, Dict[str, Any]] = {}
+    for key in order:
+        if not isinstance(key, str):
+            continue
+        item = agents.get(key)
+        if not isinstance(item, dict):
+            continue
+        default_command = item.get("default_command")
+        if not isinstance(default_command, str) or not default_command.strip():
+            continue
+        copied = dict(item)
+        copied["default_command"] = default_command.strip()
+        copied.setdefault("label", key)
+        copied.setdefault("description", "")
+        copied.setdefault("aliases", [])
+        catalog[key] = copied
+
+    if not catalog:
+        raise RuntimeError(f"agent catalog 为空: {CATEGORY_FILE}")
+    return catalog
+
+
+def _normalize_alias(token: str) -> str:
+    normalized = token.strip().lower().replace("_", "-")
+    normalized = " ".join(normalized.split())
+    return normalized
+
+
+def _build_alias_map(catalog: Dict[str, Dict[str, Any]]) -> Dict[str, str]:
+    alias_map: Dict[str, str] = {}
+    for key, meta in catalog.items():
+        candidates: set[str] = {
+            key,
+            key.replace("_", "-"),
+            key.replace("_", " "),
+        }
+        raw_aliases = meta.get("aliases")
+        if isinstance(raw_aliases, list):
+            for raw in raw_aliases:
+                if isinstance(raw, str) and raw.strip():
+                    candidates.add(raw)
+        label = meta.get("label")
+        if isinstance(label, str) and label.strip():
+            candidates.add(label)
+        registry_id = meta.get("registry_id")
+        if isinstance(registry_id, str) and registry_id.strip():
+            candidates.add(registry_id)
+
+        for candidate in candidates:
+            norm = _normalize_alias(candidate)
+            if norm:
+                alias_map[norm] = key
+    return alias_map
+
+
+def _agent_option_name(agent: str) -> str:
+    return agent.replace("_", "-")
+
+
+AGENT_CATALOG: Dict[str, Dict[str, Any]] = _load_agent_catalog()
+AGENTS: Tuple[str, ...] = tuple(AGENT_CATALOG.keys())
+AGENT_ALIAS_MAP: Dict[str, str] = _build_alias_map(AGENT_CATALOG)
 
 
 class ACPProbeError(RuntimeError):
@@ -276,9 +333,15 @@ def _print_catalog() -> None:
         print(f"- {agent}: {item['label']}")
         print(f"  描述: {item['description']}")
         print(f"  默认命令: {item['default_command']}")
+        install_strategy = item.get("isolated_install")
+        if isinstance(install_strategy, str) and install_strategy:
+            print(f"  隔离安装策略: {install_strategy}")
         pkg = item.get("isolated_npm_package")
         if isinstance(pkg, str) and pkg:
             print(f"  隔离安装包: {pkg}")
+        npx_pkg = item.get("npx_package")
+        if isinstance(npx_pkg, str) and npx_pkg:
+            print(f"  npx 包: {npx_pkg}")
 
 
 def _parse_selected_agents(raw: str) -> List[str]:
@@ -288,14 +351,25 @@ def _parse_selected_agents(raw: str) -> List[str]:
     selected: List[str] = []
     seen: set[str] = set()
     for part in raw.split(","):
-        agent = part.strip().lower()
-        if not agent:
+        raw_agent = part.strip()
+        if not raw_agent:
             continue
+        token = _normalize_alias(raw_agent)
+        if not token:
+            continue
+        if token == "all":
+            return list(AGENTS)
+
+        agent = AGENT_ALIAS_MAP.get(token)
+        if agent is None:
+            agent = AGENT_ALIAS_MAP.get(token.replace(" ", "-"))
+        if agent is None:
+            agent = AGENT_ALIAS_MAP.get(token.replace("-", " "))
         if agent == "all":
             return list(AGENTS)
-        if agent not in AGENT_CATALOG:
+        if agent is None or agent not in AGENT_CATALOG:
             supported = ", ".join(AGENTS)
-            raise ValueError(f"未知 agent: {agent}（支持: {supported}）")
+            raise ValueError(f"未知 agent: {raw_agent}（支持: {supported}）")
         if agent not in seen:
             selected.append(agent)
             seen.add(agent)
@@ -343,8 +417,13 @@ def _interactive_select_agents() -> List[str]:
                     invalid.append(token)
                     continue
             else:
-                agent = token
-            if agent not in AGENT_CATALOG:
+                norm = _normalize_alias(token)
+                agent = AGENT_ALIAS_MAP.get(norm)
+                if agent is None:
+                    agent = AGENT_ALIAS_MAP.get(norm.replace(" ", "-"))
+                if agent is None:
+                    agent = AGENT_ALIAS_MAP.get(norm.replace("-", " "))
+            if agent is None or agent not in AGENT_CATALOG:
                 invalid.append(token)
                 continue
             if agent not in seen:
@@ -370,14 +449,93 @@ def _default_isolated_base_dir(path_like: str) -> Path:
     return Path(_expand_env(path_like)).expanduser().resolve()
 
 
+def _current_platform_key() -> Optional[str]:
+    if sys.platform.startswith("darwin"):
+        os_name = "darwin"
+    elif sys.platform.startswith("linux"):
+        os_name = "linux"
+    elif os.name == "nt":
+        os_name = "windows"
+    else:
+        return None
+
+    machine = ""
+    if hasattr(os, "uname"):
+        machine = os.uname().machine.lower()
+    else:
+        machine = os.environ.get("PROCESSOR_ARCHITECTURE", "").lower()
+
+    if machine in ("arm64", "aarch64"):
+        arch = "aarch64"
+    elif machine in ("x86_64", "amd64", "x64"):
+        arch = "x86_64"
+    else:
+        return None
+
+    return f"{os_name}-{arch}"
+
+
+def _resolve_binary_target(agent: str) -> Optional[Dict[str, Any]]:
+    meta = AGENT_CATALOG[agent]
+    binary_targets = meta.get("binary_targets")
+    if not isinstance(binary_targets, dict):
+        return None
+    platform_key = _current_platform_key()
+    if platform_key is None:
+        return None
+    target = binary_targets.get(platform_key)
+    if not isinstance(target, dict):
+        return None
+    return target
+
+
+def _normalize_cmd_path_token(raw_token: str) -> Path:
+    token = raw_token.strip().replace("\\", "/")
+    if token.startswith("./"):
+        token = token[2:]
+    pure = PurePosixPath(token)
+    return Path(*pure.parts)
+
+
+def _build_isolated_binary_runner_command(agent: str, runners_dir: Path) -> List[str]:
+    target = _resolve_binary_target(agent)
+    if target is None:
+        raise ValueError(f"[{agent}] 当前平台无可用 binary 发行包，无法构建隔离命令")
+    cmd_raw = target.get("cmd")
+    if not isinstance(cmd_raw, str) or not cmd_raw.strip():
+        raise ValueError(f"[{agent}] binary target 缺少 cmd")
+
+    parts = shlex.split(cmd_raw)
+    if not parts:
+        raise ValueError(f"[{agent}] binary target cmd 非法: {cmd_raw}")
+
+    cmd_path = (runners_dir / agent / _normalize_cmd_path_token(parts[0])).resolve()
+    command: List[str] = [str(cmd_path)]
+
+    target_args = target.get("args")
+    if isinstance(target_args, list):
+        command.extend(str(x) for x in target_args)
+    if len(parts) > 1:
+        command.extend(parts[1:])
+    return command
+
+
 def _build_isolated_runner_command(agent: str, runners_dir: Path) -> List[str]:
     meta = AGENT_CATALOG[agent]
-    base = runners_dir / agent
-    bin_name = _npm_bin_name(str(meta["isolated_bin"]))
-    runner_bin = base / "node_modules" / ".bin" / bin_name
-    command = [str(runner_bin)]
-    command.extend(meta.get("isolated_extra_args", []))
-    return command
+    install_strategy = meta.get("isolated_install")
+
+    if install_strategy == "binary":
+        return _build_isolated_binary_runner_command(agent, runners_dir)
+
+    if install_strategy == "npm":
+        base = runners_dir / agent
+        bin_name = _npm_bin_name(str(meta["isolated_bin"]))
+        runner_bin = base / "node_modules" / ".bin" / bin_name
+        command = [str(runner_bin)]
+        command.extend(meta.get("isolated_extra_args", []))
+        return command
+
+    raise ValueError(f"[{agent}] 未配置隔离安装策略，无法构建隔离命令")
 
 
 def _command_uses_default_runner(agent: str, command_raw: str) -> bool:
@@ -385,7 +543,7 @@ def _command_uses_default_runner(agent: str, command_raw: str) -> bool:
     return command_raw.strip() == default_cmd
 
 
-def _install_missing_runner_isolated(
+def _install_missing_runner_isolated_npm(
     agent: str,
     *,
     runners_dir: Path,
@@ -432,6 +590,111 @@ def _install_missing_runner_isolated(
         return False, f"隔离安装完成但 runner 不可执行: {msg}", []
 
     return True, "隔离安装成功", isolated_command
+
+
+def _install_missing_runner_isolated_binary(
+    agent: str,
+    *,
+    runners_dir: Path,
+    timeout_sec: int,
+) -> Tuple[bool, str, List[str]]:
+    target = _resolve_binary_target(agent)
+    if target is None:
+        return False, "当前平台无可用 binary 发行包", []
+
+    archive_url = target.get("archive")
+    if not isinstance(archive_url, str) or not archive_url:
+        return False, "binary target 缺少 archive URL", []
+
+    install_dir = (runners_dir / agent).resolve()
+    if install_dir.exists():
+        shutil.rmtree(install_dir)
+    install_dir.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.TemporaryDirectory(prefix=f"acp-{agent}-") as td:
+        archive_path = Path(td) / "runner-archive"
+        curl_bin = shutil.which("curl")
+        if curl_bin:
+            command = [
+                curl_bin,
+                "-fL",
+                "--max-time",
+                str(timeout_sec),
+                "-o",
+                str(archive_path),
+                archive_url,
+            ]
+            try:
+                completed = subprocess.run(
+                    command,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout_sec + 5,
+                )
+            except Exception as exc:  # noqa: BLE001
+                return False, f"下载 binary 失败: {exc}", []
+            if completed.returncode != 0:
+                stderr = completed.stderr.strip()
+                stdout = completed.stdout.strip()
+                return False, (stderr or stdout or "curl 下载失败"), []
+        else:
+            try:
+                with urllib.request.urlopen(archive_url, timeout=timeout_sec) as response:
+                    archive_path.write_bytes(response.read())
+            except Exception as exc:  # noqa: BLE001
+                return False, f"下载 binary 失败: {exc}", []
+
+        try:
+            if zipfile.is_zipfile(archive_path):
+                with zipfile.ZipFile(archive_path) as zf:
+                    zf.extractall(install_dir)
+            else:
+                with tarfile.open(archive_path, mode="r:*") as tf:
+                    tf.extractall(install_dir)
+        except Exception as exc:  # noqa: BLE001
+            return False, f"解压 binary 失败: {exc}", []
+
+    try:
+        isolated_command = _build_isolated_runner_command(agent, runners_dir)
+    except Exception as exc:  # noqa: BLE001
+        return False, f"构建隔离命令失败: {exc}", []
+
+    if os.name != "nt":
+        try:
+            bin_path = Path(isolated_command[0])
+            current_mode = bin_path.stat().st_mode
+            bin_path.chmod(current_mode | 0o111)
+        except Exception:  # noqa: BLE001
+            pass
+
+    ok, msg = _check_command_available(isolated_command)
+    if not ok:
+        return False, f"binary 安装完成但 runner 不可执行: {msg}", []
+
+    return True, "binary 隔离安装成功", isolated_command
+
+
+def _install_missing_runner_isolated(
+    agent: str,
+    *,
+    runners_dir: Path,
+    timeout_sec: int,
+) -> Tuple[bool, str, List[str]]:
+    install_strategy = AGENT_CATALOG[agent].get("isolated_install")
+    if install_strategy == "npm":
+        return _install_missing_runner_isolated_npm(
+            agent,
+            runners_dir=runners_dir,
+            timeout_sec=timeout_sec,
+        )
+    if install_strategy == "binary":
+        return _install_missing_runner_isolated_binary(
+            agent,
+            runners_dir=runners_dir,
+            timeout_sec=timeout_sec,
+        )
+    return False, "未配置隔离安装策略", []
 
 
 def _parse_key_value_items(
@@ -825,25 +1088,21 @@ def _build_parser() -> argparse.ArgumentParser:
         help="隔离 runner 根目录（默认: skill/.runtime/runners）",
     )
 
-    parser.add_argument(
-        "--codex-command",
-        default=AGENT_CATALOG["codex"]["default_command"],
-        help="Codex ACP runner 命令",
-    )
-    parser.add_argument(
-        "--claude-command",
-        default=AGENT_CATALOG["claude"]["default_command"],
-        help="Claude ACP runner 命令",
-    )
-    parser.add_argument(
-        "--copilot-command",
-        default=AGENT_CATALOG["copilot"]["default_command"],
-        help="Copilot ACP runner 命令",
-    )
-
-    parser.add_argument("--codex-mode", default="", help="Codex 默认 mode（可选）")
-    parser.add_argument("--claude-mode", default="", help="Claude 默认 mode（可选）")
-    parser.add_argument("--copilot-mode", default="", help="Copilot 默认 mode（可选）")
+    for agent in AGENTS:
+        option_name = _agent_option_name(agent)
+        label = AGENT_CATALOG[agent].get("label", agent)
+        parser.add_argument(
+            f"--{option_name}-command",
+            dest=f"{agent}_command",
+            default=AGENT_CATALOG[agent]["default_command"],
+            help=f"{label} runner 命令",
+        )
+        parser.add_argument(
+            f"--{option_name}-mode",
+            dest=f"{agent}_mode",
+            default="",
+            help=f"{label} 默认 mode（可选）",
+        )
 
     perms = parser.add_mutually_exclusive_group()
     perms.add_argument("--manual-permissions", action="store_true", help="关闭自动审批，改为手动审批")
@@ -908,31 +1167,37 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     for agent in AGENTS:
+        option_name = _agent_option_name(agent)
+        label = AGENT_CATALOG[agent].get("label", agent)
         parser.add_argument(
-            f"--{agent}-env",
+            f"--{option_name}-env",
+            dest=f"{agent}_env",
             action="append",
             default=[],
             metavar="KEY=VALUE",
-            help=f"{agent} 的环境变量，可重复传入",
+            help=f"{label} 的环境变量，可重复传入",
         )
         parser.add_argument(
-            f"--{agent}-cwd",
+            f"--{option_name}-cwd",
+            dest=f"{agent}_cwd",
             default="",
-            help=f"{agent} 的工作目录（可选）",
+            help=f"{label} 的工作目录（可选）",
         )
         parser.add_argument(
-            f"--{agent}-config",
+            f"--{option_name}-config",
+            dest=f"{agent}_config",
             action="append",
             default=[],
             metavar="KEY=VALUE",
-            help=f"{agent} 的默认 session config 选项，可重复传入",
+            help=f"{label} 的默认 session config 选项，可重复传入",
         )
         parser.add_argument(
-            f"--{agent}-config-index",
+            f"--{option_name}-config-index",
+            dest=f"{agent}_config_index",
             action="append",
             default=[],
             metavar="KEY=INDEX",
-            help=f"{agent} 的默认 session config 选项，可用编号选择（1-based）",
+            help=f"{label} 的默认 session config 选项，可用编号选择（1-based）",
         )
 
     return parser
@@ -963,8 +1228,9 @@ def _build_initial_config(
     for agent in selected_agents:
         command_raw = getattr(args, f"{agent}_command")
         use_isolated_default = _command_uses_default_runner(agent, command_raw)
+        install_strategy = AGENT_CATALOG[agent].get("isolated_install")
 
-        if use_isolated_default:
+        if use_isolated_default and install_strategy in ("npm", "binary"):
             command = _build_isolated_runner_command(agent, runners_dir)
         else:
             command = _split_command(command_raw)
@@ -973,7 +1239,7 @@ def _build_initial_config(
         if not ok:
             install_failures: List[str] = []
             if install_missing:
-                if use_isolated_default:
+                if use_isolated_default and install_strategy in ("npm", "binary"):
                     installed, install_message, installed_command = _install_missing_runner_isolated(
                         agent,
                         runners_dir=runners_dir,
@@ -995,9 +1261,10 @@ def _build_initial_config(
                 print(f"警告: {text}", file=sys.stderr)
 
         env_items = getattr(args, f"{agent}_env")
+        option_name = _agent_option_name(agent)
         env = _parse_key_value_items(
             env_items,
-            f"--{agent}-env",
+            f"--{option_name}-env",
             allow_empty_value=True,
             expand_value=True,
         )
@@ -1011,7 +1278,7 @@ def _build_initial_config(
         if env:
             agent_cfg["env"] = env
         if agent_cwd_raw:
-            agent_cfg["cwd"] = _resolve_existing_dir(agent_cwd_raw, f"--{agent}-cwd")
+            agent_cfg["cwd"] = _resolve_existing_dir(agent_cwd_raw, f"--{option_name}-cwd")
 
         config["agents"][agent] = agent_cfg
 
@@ -1174,15 +1441,16 @@ def main() -> int:
         agent_cfg_any = agents_cfg.get(agent)
         if not isinstance(agent_cfg_any, dict):
             continue
+        option_name = _agent_option_name(agent)
         cli_config_overrides = _parse_key_value_items(
             getattr(args, f"{agent}_config"),
-            f"--{agent}-config",
+            f"--{option_name}-config",
             allow_empty_value=False,
             expand_value=True,
         )
         cli_config_index_overrides = _parse_key_int_items(
             getattr(args, f"{agent}_config_index"),
-            f"--{agent}-config-index",
+            f"--{option_name}-config-index",
         )
         _apply_agent_defaults(
             agent=agent,

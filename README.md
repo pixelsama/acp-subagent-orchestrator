@@ -26,11 +26,20 @@ MIT
 python3 scripts/setup.py --help
 ```
 
+Show supported runners (25 ACP tools in current catalog):
+
+```bash
+python3 scripts/setup.py --list-catalog
+```
+
 Example:
 
 ```bash
 # Configure only Claude (recommended to match explicit user choice)
 python3 scripts/setup.py --agents claude
+
+# Configure by alias (e.g. github-copilot / qwen-code / factory-droid)
+python3 scripts/setup.py --agents github-copilot,qwen-code,factory-droid
 
 # Configure all runners explicitly
 python3 scripts/setup.py --agents all
@@ -65,5 +74,6 @@ This heartbeat is intentionally non-semantic and only signals liveness.
 
 - `SKILL.md`: skill instructions and guardrails
 - `scripts/setup.py`: setup/discovery and config generation
+- `references/agent_catalog.json`: ACP runner catalog (aliases + install metadata)
 - `scripts/acp_orchestrator.py`: ACP JSON-RPC orchestration runtime
 - `references/`: examples and rule references
