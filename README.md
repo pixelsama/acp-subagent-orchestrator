@@ -26,6 +26,16 @@ MIT
 python3 scripts/setup.py --help
 ```
 
+Example:
+
+```bash
+# Configure only Claude (recommended to match explicit user choice)
+python3 scripts/setup.py --agents claude
+
+# Configure all runners explicitly
+python3 scripts/setup.py --agents all
+```
+
 2. Prepare a plan JSON (see [`references/plan.example.json`](references/plan.example.json)).
 
 3. Run the orchestrator:
@@ -57,4 +67,3 @@ This heartbeat is intentionally non-semantic and only signals liveness.
 - `scripts/setup.py`: setup/discovery and config generation
 - `scripts/acp_orchestrator.py`: ACP JSON-RPC orchestration runtime
 - `references/`: examples and rule references
-

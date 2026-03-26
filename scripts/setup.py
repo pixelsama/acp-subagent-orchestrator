@@ -283,7 +283,7 @@ def _print_catalog() -> None:
 
 def _parse_selected_agents(raw: str) -> List[str]:
     if not raw.strip():
-        return list(AGENTS)
+        raise ValueError("--agents 不能为空，请按用户选择显式传入（例如: --agents claude）")
 
     selected: List[str] = []
     seen: set[str] = set()
@@ -291,6 +291,8 @@ def _parse_selected_agents(raw: str) -> List[str]:
         agent = part.strip().lower()
         if not agent:
             continue
+        if agent == "all":
+            return list(AGENTS)
         if agent not in AGENT_CATALOG:
             supported = ", ".join(AGENTS)
             raise ValueError(f"未知 agent: {agent}（支持: {supported}）")
@@ -301,6 +303,61 @@ def _parse_selected_agents(raw: str) -> List[str]:
     if not selected:
         raise ValueError("--agents 不能为空")
     return selected
+
+
+def _interactive_select_agents() -> List[str]:
+    if not sys.stdin.isatty():
+        raise ValueError(
+            "--agents 未指定，且当前非交互环境。请先向用户确认 runner 选择后传入 --agents，"
+            "或用 --agents all 显式全量配置。"
+        )
+
+    print("\n请选择要配置的 runner（可多选）：")
+    for idx, agent in enumerate(AGENTS, start=1):
+        item = AGENT_CATALOG[agent]
+        print(f"  {idx}. {agent}: {item['label']} - {item['description']}")
+    print("  all. 全部配置")
+
+    while True:
+        raw = input("请输入编号/名称，多个值用逗号分隔: ").strip().lower()
+        if not raw:
+            print("输入为空，请至少选择一个 runner。")
+            continue
+
+        tokens = [part.strip() for part in raw.split(",") if part.strip()]
+        if not tokens:
+            print("输入无效，请重试。")
+            continue
+        if any(token == "all" for token in tokens):
+            return list(AGENTS)
+
+        selected: List[str] = []
+        seen: set[str] = set()
+        invalid: List[str] = []
+        for token in tokens:
+            if token.isdigit():
+                idx = int(token)
+                if 1 <= idx <= len(AGENTS):
+                    agent = AGENTS[idx - 1]
+                else:
+                    invalid.append(token)
+                    continue
+            else:
+                agent = token
+            if agent not in AGENT_CATALOG:
+                invalid.append(token)
+                continue
+            if agent not in seen:
+                selected.append(agent)
+                seen.add(agent)
+
+        if invalid:
+            print(f"存在无效选择: {', '.join(invalid)}，请重试。")
+            continue
+        if not selected:
+            print("请至少选择一个 runner。")
+            continue
+        return selected
 
 
 def _npm_bin_name(base: str) -> str:
@@ -751,7 +808,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--agents",
         default="",
-        help="要配置的 agent，逗号分隔（默认全部）",
+        help="要配置的 agent，逗号分隔。留空时进入交互选择；可用 all 显式全量配置",
     )
     parser.add_argument("--output", default=str(default_output), help="输出 setup.json 路径")
     parser.add_argument("--cwd", default=".", help="默认工作目录")
@@ -1094,7 +1151,10 @@ def main() -> int:
     if args.install_timeout <= 0:
         raise ValueError("--install-timeout 必须大于 0")
 
-    selected_agents = _parse_selected_agents(args.agents)
+    if args.agents.strip():
+        selected_agents = _parse_selected_agents(args.agents)
+    else:
+        selected_agents = _interactive_select_agents()
 
     global_cwd = _resolve_existing_dir(args.cwd, "--cwd")
     auto_approve = not args.manual_permissions
