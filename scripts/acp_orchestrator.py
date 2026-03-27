@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""ACP 子代理编排器。
+"""ACP Subagent Orchestrator.
 
-通过 stdio JSON-RPC 调用 ACP 兼容 Agent，执行有边界的子任务。
-支持通过 setup 配置预设 runner、默认权限模式和会话配置项。
+Invokes ACP-compatible agents via stdio JSON-RPC to execute bounded subtasks.
+Supports configuring preset runners, default permission modes, and session options via setup.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ DEFAULT_AGENT_COMMANDS: Dict[str, List[str]] = {
 
 
 class ACPError(RuntimeError):
-    """用于表示 ACP 协议或运行时错误。"""
+    """Represents an ACP protocol or runtime error."""
 
 
 @dataclass
@@ -78,7 +78,7 @@ def _utc_now_iso() -> str:
 
 
 class StatusTracker:
-    """将编排运行状态周期性写入 JSON 文件，供后台任务轮询查看。"""
+    """Periodically writes orchestration run status to a JSON file for background task polling."""
 
     def __init__(
         self,
@@ -266,7 +266,7 @@ class ACPConnection:
 
     def start(self) -> None:
         if self.process is not None:
-            raise ACPError("进程已启动")
+            raise ACPError("Process already started")
 
         self.process = subprocess.Popen(
             self.command,
@@ -301,7 +301,7 @@ class ACPConnection:
         heartbeat_label: Optional[str] = None,
     ) -> Dict[str, Any]:
         if self.process is None or self.process.stdin is None:
-            raise ACPError("进程尚未启动")
+            raise ACPError("Process not started")
 
         request_id = self._next_id
         self._next_id += 1
@@ -323,7 +323,7 @@ class ACPConnection:
             now_monotonic = time.monotonic()
             remaining = deadline - time.time()
             if remaining <= 0:
-                raise ACPError(f"等待 {method} 响应超时")
+                raise ACPError(f"Timed out waiting for {method} response")
 
             wait_timeout = remaining
             if heartbeat_label and self.heartbeat_enabled and not self.verbose:
@@ -365,22 +365,22 @@ class ACPConnection:
                 continue
 
             if msg is None:
-                raise ACPError("Agent 进程意外关闭了 stdout")
+                raise ACPError("Agent process unexpectedly closed stdout")
 
-            # Agent -> Client 请求
+            # Agent -> Client request
             if "method" in msg and "id" in msg and "result" not in msg and "error" not in msg:
                 self._handle_agent_request(msg)
                 continue
 
-            # Agent -> Client 通知
+            # Agent -> Client notification
             if "method" in msg and "id" not in msg:
                 self._handle_notification(msg)
                 continue
 
-            # 本次请求对应响应
+            # Response matching this request
             if msg.get("id") == request_id:
                 if "error" in msg:
-                    raise ACPError(f"{method} 调用失败: {msg['error']}")
+                    raise ACPError(f"{method} call failed: {msg['error']}")
                 result = msg.get("result")
                 if isinstance(result, dict):
                     return result
@@ -388,7 +388,7 @@ class ACPConnection:
 
     def _send(self, payload: Dict[str, Any]) -> None:
         if self.process is None or self.process.stdin is None:
-            raise ACPError("进程 stdin 不可用")
+            raise ACPError("Process stdin unavailable")
         wire = json.dumps(payload, ensure_ascii=False)
         if self.verbose:
             print(f">>> {wire}", file=sys.stderr)
@@ -404,13 +404,13 @@ class ACPConnection:
             line = raw.strip()
             if not line:
                 continue
-            # 当前仅支持按行分隔的 JSON-RPC 负载。
+            # Currently only line-delimited JSON-RPC payloads are supported.
             if line.lower().startswith("content-length:"):
                 self._queue.put(
                     {
                         "method": "_internal/error",
                         "params": {
-                            "message": "检测到 Content-Length 分帧。请使用按行分隔 JSON 的 ACP 适配器。"
+                            "message": "Content-Length framing detected. Please use a line-delimited JSON ACP adapter."
                         },
                     }
                 )
@@ -419,7 +419,7 @@ class ACPConnection:
                 msg = json.loads(line)
             except json.JSONDecodeError:
                 if self.verbose:
-                    print(f"[acp] 非 JSON stdout: {line}", file=sys.stderr)
+                    print(f"[acp] non-JSON stdout: {line}", file=sys.stderr)
                 continue
             if self.verbose:
                 print(f"<<< {json.dumps(msg, ensure_ascii=False)}", file=sys.stderr)
@@ -446,7 +446,7 @@ class ACPConnection:
 
         method = msg.get("method")
         if method == "_internal/error":
-            raise ACPError(msg.get("params", {}).get("message", "内部传输错误"))
+            raise ACPError(msg.get("params", {}).get("message", "Internal transport error"))
 
         if method != "session/update":
             self.updates.append({"method": method, "params": msg.get("params", {})})
@@ -470,7 +470,7 @@ class ACPConnection:
         try:
             self.status_tick_callback(payload)
         except Exception:
-            # 状态输出不应影响 ACP 主流程。
+            # Status output should not affect the main ACP flow.
             return
 
     def _handle_agent_request(self, msg: Dict[str, Any]) -> None:
@@ -483,14 +483,14 @@ class ACPConnection:
             self._send({"jsonrpc": "2.0", "id": request_id, "result": {"outcome": outcome}})
             return
 
-        # 对暂不支持的 Client 方法，返回标准 method-not-found。
+        # Return standard method-not-found for unsupported client methods.
         self._send(
             {
                 "jsonrpc": "2.0",
                 "id": request_id,
                 "error": {
                     "code": -32601,
-                    "message": f"编排器客户端暂不支持该方法: {method}",
+                    "message": f"Method not supported by orchestrator client: {method}",
                 },
             }
         )
@@ -539,24 +539,24 @@ def _load_json(path: Path, label: str) -> Dict[str, Any]:
         with path.open("r", encoding="utf-8") as f:
             data = json.load(f)
     except FileNotFoundError as exc:
-        raise ACPError(f"未找到{label}文件: {path}") from exc
+        raise ACPError(f"{label} file not found: {path}") from exc
     except json.JSONDecodeError as exc:
-        raise ACPError(f"{label}文件不是合法 JSON: {path}") from exc
+        raise ACPError(f"{label} file is not valid JSON: {path}") from exc
 
     if not isinstance(data, dict):
-        raise ACPError(f"{label}文件根节点必须是 JSON 对象")
+        raise ACPError(f"{label} file root must be a JSON object")
     return data
 
 
 def _load_plan(path: Path) -> Dict[str, Any]:
-    data = _load_json(path, "计划")
+    data = _load_json(path, "plan")
 
     if data.get("delegation_explicitly_requested") is not True:
-        raise ACPError("计划必须设置 delegation_explicitly_requested=true 才允许委派")
+        raise ACPError("Plan must set delegation_explicitly_requested=true to allow delegation")
 
     tasks = data.get("tasks")
     if not isinstance(tasks, list) or not tasks:
-        raise ACPError("plan.tasks 必须是非空数组")
+        raise ACPError("plan.tasks must be a non-empty array")
 
     return data
 
@@ -564,7 +564,7 @@ def _load_plan(path: Path) -> Dict[str, Any]:
 def _load_setup(path: Path) -> Dict[str, Any]:
     data = _load_json(path, "setup")
     if "agents" in data and not isinstance(data["agents"], dict):
-        raise ACPError("setup.agents 必须是对象")
+        raise ACPError("setup.agents must be an object")
     return data
 
 
@@ -572,14 +572,14 @@ def _parse_string_map(value: Any, field_name: str) -> Dict[str, str]:
     if value is None:
         return {}
     if not isinstance(value, dict):
-        raise ACPError(f"{field_name} 必须是对象")
+        raise ACPError(f"{field_name} must be an object")
 
     parsed: Dict[str, str] = {}
     for k, v in value.items():
         if not isinstance(k, str):
-            raise ACPError(f"{field_name} 的键必须是字符串")
+            raise ACPError(f"{field_name} keys must be strings")
         if not isinstance(v, str):
-            raise ACPError(f"{field_name}.{k} 的值必须是字符串")
+            raise ACPError(f"{field_name}.{k} value must be a string")
         parsed[k] = _expand_env(v)
     return parsed
 
@@ -588,18 +588,18 @@ def _parse_command(value: Any, fallback: Optional[List[str]], field_name: str) -
     if isinstance(value, str):
         cmd = shlex.split(value)
         if not cmd:
-            raise ACPError(f"{field_name} 不能为空")
+            raise ACPError(f"{field_name} must not be empty")
         return cmd
 
     if isinstance(value, list) and all(isinstance(x, str) for x in value):
         if not value:
-            raise ACPError(f"{field_name} 不能为空")
+            raise ACPError(f"{field_name} must not be empty")
         return value
 
     if value is None and fallback:
         return fallback
 
-    raise ACPError(f"{field_name} 必须是字符串命令或字符串数组")
+    raise ACPError(f"{field_name} must be a string command or an array of strings")
 
 
 def _merge_agent_overrides(
@@ -609,9 +609,9 @@ def _merge_agent_overrides(
 ) -> Dict[str, AgentConfig]:
     for name, cfg_any in overrides.items():
         if not isinstance(name, str) or not name.strip():
-            raise ACPError(f"{source_name}.agents 的键必须是非空字符串")
+            raise ACPError(f"{source_name}.agents keys must be non-empty strings")
         if not isinstance(cfg_any, dict):
-            raise ACPError(f"{source_name}.agents.{name} 必须是对象")
+            raise ACPError(f"{source_name}.agents.{name} must be an object")
 
         base = current.get(name)
         if base is None:
@@ -644,7 +644,7 @@ def _merge_agent_overrides(
             elif isinstance(raw_cwd, str):
                 cwd = str(Path(_expand_env(raw_cwd)).expanduser())
             else:
-                raise ACPError(f"{source_name}.agents.{name}.cwd 必须是字符串或 null")
+                raise ACPError(f"{source_name}.agents.{name}.cwd must be a string or null")
 
         auto_approve = base.auto_approve_permissions
         if "auto_approve_permissions" in cfg_any:
@@ -662,7 +662,7 @@ def _merge_agent_overrides(
             elif isinstance(raw_mode, str):
                 default_mode = raw_mode
             else:
-                raise ACPError(f"{source_name}.agents.{name}.default_mode 必须是字符串或 null")
+                raise ACPError(f"{source_name}.agents.{name}.default_mode must be a string or null")
 
         current[name] = AgentConfig(
             name=name,
@@ -686,18 +686,18 @@ def _parse_agent_configs(plan: Dict[str, Any], setup: Dict[str, Any]) -> Dict[st
     setup_agents = setup.get("agents", {})
     if setup_agents:
         if not isinstance(setup_agents, dict):
-            raise ACPError("setup.agents 必须是对象")
+            raise ACPError("setup.agents must be an object")
         result = _merge_agent_overrides(result, setup_agents, "setup")
 
     plan_agents = plan.get("agents", {})
     if plan_agents:
         if not isinstance(plan_agents, dict):
-            raise ACPError("plan.agents 必须是对象")
+            raise ACPError("plan.agents must be an object")
         result = _merge_agent_overrides(result, plan_agents, "plan")
 
     for name, cfg in result.items():
         if not cfg.command:
-            raise ACPError(f"agent {name} 未配置 command")
+            raise ACPError(f"agent {name} is missing command")
 
     return result
 
@@ -707,13 +707,13 @@ def _parse_routing(plan: Dict[str, Any]) -> Dict[str, str]:
     if raw is None:
         return {}
     if not isinstance(raw, dict):
-        raise ACPError("plan.routing 必须是对象")
+        raise ACPError("plan.routing must be an object")
     routing: Dict[str, str] = {}
     for role, agent in raw.items():
         if not isinstance(role, str) or not role.strip():
-            raise ACPError("plan.routing 的键必须是非空字符串")
+            raise ACPError("plan.routing keys must be non-empty strings")
         if not isinstance(agent, str) or not agent.strip():
-            raise ACPError(f"plan.routing.{role} 的值必须是非空字符串")
+            raise ACPError(f"plan.routing.{role} value must be a non-empty string")
         routing[role.strip()] = agent.strip()
     return routing
 
@@ -722,16 +722,16 @@ def _parse_ownership(raw: Any, task_id: str) -> List[str]:
     if isinstance(raw, str):
         value = raw.strip()
         if not value:
-            raise ACPError(f"task {task_id}.ownership 不能为空")
+            raise ACPError(f"task {task_id}.ownership must not be empty")
         return [value]
 
     if isinstance(raw, list) and all(isinstance(x, str) for x in raw):
         normalized = [x.strip() for x in raw if x.strip()]
         if not normalized:
-            raise ACPError(f"task {task_id}.ownership 不能为空")
+            raise ACPError(f"task {task_id}.ownership must not be empty")
         return normalized
 
-    raise ACPError(f"task {task_id}.ownership 必须是字符串或字符串数组")
+    raise ACPError(f"task {task_id}.ownership must be a string or an array of strings")
 
 
 def _parse_tasks(plan: Dict[str, Any], routing: Dict[str, str]) -> List[TaskSpec]:
@@ -740,13 +740,13 @@ def _parse_tasks(plan: Dict[str, Any], routing: Dict[str, str]) -> List[TaskSpec
 
     for raw in plan["tasks"]:
         if not isinstance(raw, dict):
-            raise ACPError("每个 task 都必须是对象")
+            raise ACPError("each task must be an object")
 
         task_id = str(raw.get("id", "")).strip()
         if not task_id:
-            raise ACPError("task.id 为必填项")
+            raise ACPError("task.id is required")
         if task_id in seen:
-            raise ACPError(f"task.id 重复: {task_id}")
+            raise ACPError(f"duplicate task.id: {task_id}")
         seen.add(task_id)
 
         agent = str(raw.get("agent", "")).strip()
@@ -756,47 +756,47 @@ def _parse_tasks(plan: Dict[str, Any], routing: Dict[str, str]) -> List[TaskSpec
             role = role_raw.strip()
         prompt = str(raw.get("prompt", "")).strip()
         if not prompt:
-            raise ACPError(f"task {task_id} 必须提供非空的 prompt")
+            raise ACPError(f"task {task_id} must provide a non-empty prompt")
 
         if not agent:
             if role is None:
-                raise ACPError(f"task {task_id} 必须提供 agent，或提供可路由的 role")
+                raise ACPError(f"task {task_id} must provide an agent or a routable role")
             mapped_agent = routing.get(role)
             if not mapped_agent:
-                raise ACPError(f"task {task_id}.role={role} 在 plan.routing 中未配置映射")
+                raise ACPError(f"task {task_id}.role={role} is not mapped in plan.routing")
             agent = mapped_agent
 
         ownership = _parse_ownership(raw.get("ownership"), task_id)
 
         depends_any = raw.get("depends_on", [])
         if not isinstance(depends_any, list) or not all(isinstance(x, str) for x in depends_any):
-            raise ACPError(f"task {task_id}.depends_on 必须是字符串数组")
+            raise ACPError(f"task {task_id}.depends_on must be an array of strings")
 
         priority = str(raw.get("priority", "sidecar")).strip().lower()
         if priority not in {"critical", "sidecar"}:
-            raise ACPError(f"task {task_id}.priority 必须是 critical 或 sidecar")
+            raise ACPError(f"task {task_id}.priority must be critical or sidecar")
 
         timeout_any = raw.get("timeout_sec", 900)
         try:
             timeout_sec = int(timeout_any)
         except Exception as exc:  # noqa: BLE001
-            raise ACPError(f"task {task_id}.timeout_sec 必须是整数") from exc
+            raise ACPError(f"task {task_id}.timeout_sec must be an integer") from exc
         if timeout_sec <= 0:
-            raise ACPError(f"task {task_id}.timeout_sec 必须大于 0")
+            raise ACPError(f"task {task_id}.timeout_sec must be greater than 0")
 
         cwd_any = raw.get("cwd")
         cwd = None
         if isinstance(cwd_any, str) and cwd_any:
             cwd = str(Path(_expand_env(cwd_any)).expanduser())
         elif cwd_any not in (None, ""):
-            raise ACPError(f"task {task_id}.cwd 必须是字符串或 null")
+            raise ACPError(f"task {task_id}.cwd must be a string or null")
 
         session_mode_any = raw.get("session_mode")
         session_mode: Optional[str] = None
         if isinstance(session_mode_any, str) and session_mode_any:
             session_mode = session_mode_any
         elif session_mode_any not in (None, ""):
-            raise ACPError(f"task {task_id}.session_mode 必须是字符串或 null")
+            raise ACPError(f"task {task_id}.session_mode must be a string or null")
 
         session_config_options = _parse_string_map(
             raw.get("session_config_options", {}),
@@ -823,7 +823,7 @@ def _parse_tasks(plan: Dict[str, Any], routing: Dict[str, str]) -> List[TaskSpec
     for t in tasks:
         missing = [dep for dep in t.depends_on if dep not in task_ids]
         if missing:
-            raise ACPError(f"task {t.id} 依赖了不存在的任务: {', '.join(missing)}")
+            raise ACPError(f"task {t.id} depends on missing task(s): {', '.join(missing)}")
 
     return tasks
 
@@ -870,7 +870,7 @@ def _apply_session_settings(
             {"sessionId": session_id, "modeId": mode},
             timeout_sec,
             strict,
-            f"session/set_mode({mode}) 失败",
+            f"session/set_mode({mode}) failed",
         )
         if result is None:
             _request_with_fallback(
@@ -879,7 +879,7 @@ def _apply_session_settings(
                 {"sessionId": session_id, "configId": "mode", "value": mode},
                 timeout_sec,
                 strict,
-                f"session/set_config_option(mode={mode}) 失败",
+                f"session/set_config_option(mode={mode}) failed",
             )
 
     merged_options.pop("mode", None)
@@ -890,17 +890,17 @@ def _apply_session_settings(
             {"sessionId": session_id, "configId": config_id, "value": value},
             timeout_sec,
             strict,
-            f"session/set_config_option({config_id}={value}) 失败",
+            f"session/set_config_option({config_id}={value}) failed",
         )
 
 
 def _build_task_prompt(task: TaskSpec) -> str:
     ownership_lines = "\n".join(f"- {item}" for item in task.ownership)
     guardrail = (
-        "\n\n执行约束:\n"
-        "1. 仅在 ownership 范围内修改。\n"
-        "2. 你不是独占代码库，不得回滚他人改动。\n"
-        "3. 输出改动文件路径列表和关键变更摘要。\n"
+        "\n\nExecution constraints:\n"
+        "1. Modify only within the declared ownership scope.\n"
+        "2. You are not alone in the repository; do not revert others' changes.\n"
+        "3. Output the list of changed file paths and a summary of key changes.\n"
         "ownership:\n"
         f"{ownership_lines}"
     )
@@ -949,7 +949,7 @@ def _run_task(
                 "clientCapabilities": {},
                 "clientInfo": {
                     "name": "acp-subagent-orchestrator",
-                    "title": "ACP 子代理编排器",
+                    "title": "ACP Subagent Orchestrator",
                     "version": "0.2.0",
                 },
             },
@@ -964,7 +964,7 @@ def _run_task(
 
         session_id = new_result.get("sessionId")
         if not isinstance(session_id, str) or not session_id:
-            raise ACPError("session/new 未返回 sessionId")
+            raise ACPError("session/new did not return sessionId")
 
         _apply_session_settings(conn, session_id, task, agent_cfg)
 
@@ -998,13 +998,14 @@ def _run_task(
         )
     except Exception as exc:  # noqa: BLE001
         duration = round(time.time() - started, 3)
+        partial_output = "".join(conn.text_chunks).strip()
         return TaskResult(
             id=task.id,
             agent=task.agent,
             status="failed",
             stop_reason=None,
             duration_sec=duration,
-            output_text="",
+            output_text=partial_output,
             updates=conn.updates,
             error=str(exc),
             stderr=conn.stderr_lines,
@@ -1023,19 +1024,24 @@ def _execute_plan(
     status_tracker: Optional[StatusTracker],
     status_interval_sec: int,
     verbose: bool,
+    pre_completed: Optional[Dict[str, TaskResult]] = None,
 ) -> List[TaskResult]:
     task_by_id = {t.id: t for t in tasks}
     pending = dict(task_by_id)
     running: Dict[Any, TaskSpec] = {}
-    completed: Dict[str, TaskResult] = {}
+    completed: Dict[str, TaskResult] = dict(pre_completed) if pre_completed else {}
     failed_ids: set[str] = set()
+
+    # Remove pre-completed tasks from pending so they are not re-run.
+    for tid in completed:
+        pending.pop(tid, None)
 
     if status_tracker:
         status_tracker.init_tasks(tasks)
 
     with ThreadPoolExecutor(max_workers=max_parallel) as pool:
         while pending or running:
-            # 依赖失败的任务直接标记为跳过。
+            # Mark tasks as skipped immediately when any dependency has failed.
             for task_id, task in list(pending.items()):
                 if any(dep in failed_ids for dep in task.depends_on):
                     skipped = TaskResult(
@@ -1046,7 +1052,7 @@ def _execute_plan(
                         duration_sec=0.0,
                         output_text="",
                         updates=[],
-                        error="因依赖失败而跳过",
+                        error="Skipped due to failed dependency",
                     )
                     completed[task_id] = skipped
                     if status_tracker:
@@ -1079,7 +1085,7 @@ def _execute_plan(
                         duration_sec=0.0,
                         output_text="",
                         updates=[],
-                        error=f"未知 agent: {task.agent}",
+                        error=f"Unknown agent: {task.agent}",
                     )
                     completed[task.id] = failed
                     if status_tracker:
@@ -1118,7 +1124,7 @@ def _execute_plan(
                 continue
 
             if pending and not launched_any:
-                # 依赖环或不可满足的依赖。
+                # Cyclic or otherwise unsatisfied dependencies.
                 for task in pending.values():
                     skipped = TaskResult(
                         id=task.id,
@@ -1128,7 +1134,7 @@ def _execute_plan(
                         duration_sec=0.0,
                         output_text="",
                         updates=[],
-                        error="依赖未满足或存在循环依赖",
+                        error="Unsatisfied dependency or dependency cycle detected",
                     )
                     completed[task.id] = skipped
                     if status_tracker:
@@ -1139,28 +1145,33 @@ def _execute_plan(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="执行 ACP 子代理委派计划")
-    parser.add_argument("--plan", required=True, help="计划 JSON 文件路径")
-    parser.add_argument("--setup", help="setup JSON 文件路径（可选）")
-    parser.add_argument("--output", help="输出报告 JSON 文件路径")
-    parser.add_argument("--status-file", help="运行状态 JSON 文件路径（可选，适合后台任务轮询）")
-    parser.add_argument("--max-parallel", type=int, help="覆盖最大并行任务数")
+    parser = argparse.ArgumentParser(description="Execute an ACP subagent delegation plan")
+    parser.add_argument("--plan", required=True, help="Path to the plan JSON file")
+    parser.add_argument("--setup", help="Path to the setup JSON file (optional)")
+    parser.add_argument("--output", help="Path to write the output report JSON")
+    parser.add_argument(
+        "--status-file",
+        help="Path to write runtime status JSON (optional, useful for background polling)",
+    )
+    parser.add_argument("--max-parallel", type=int, help="Override maximum parallel task count")
     parser.add_argument(
         "--status-interval-sec",
         type=int,
-        help="状态文件刷新间隔秒数（默认 15）",
+        help="Status file refresh interval in seconds (default: 15)",
     )
     parser.add_argument(
         "--heartbeat-interval-sec",
         type=int,
-        help="等待 session/prompt 时的心跳间隔秒数（默认 60）",
+        help="Heartbeat interval in seconds while waiting for session/prompt (default: 60)",
     )
     parser.add_argument(
         "--no-heartbeat",
         action="store_true",
-        help="关闭等待期间心跳日志",
+        help="Disable heartbeat logs while waiting",
     )
-    parser.add_argument("--verbose", action="store_true", help="打印 ACP 通信日志")
+    parser.add_argument("--verbose", action="store_true", help="Print ACP communication logs")
+    parser.add_argument("--resume", help="Previous report JSON; tasks with status=success are skipped")
+    parser.add_argument("--skip-tasks", help="Comma-separated task IDs to force-mark as succeeded and skip")
     args = parser.parse_args()
 
     plan_path = Path(args.plan).expanduser().resolve()
@@ -1171,19 +1182,22 @@ def main() -> int:
     if args.setup:
         setup_path = Path(args.setup).expanduser().resolve()
         setup = _load_setup(setup_path)
+    elif isinstance(plan.get("setup"), str):
+        setup_path = (plan_path.parent / plan["setup"]).resolve()
+        setup = _load_setup(setup_path)
 
     cwd_from_plan = plan.get("cwd")
     cwd_from_setup = setup.get("cwd")
     default_cwd = cwd_from_plan or cwd_from_setup or os.getcwd()
     default_cwd = str(Path(str(default_cwd)).expanduser().resolve())
     if not Path(default_cwd).exists():
-        raise ACPError(f"cwd 不存在: {default_cwd}")
+        raise ACPError(f"cwd does not exist: {default_cwd}")
 
     max_parallel = int(plan.get("max_parallel", setup.get("max_parallel", 2)))
     if args.max_parallel is not None:
         max_parallel = args.max_parallel
     if max_parallel <= 0:
-        raise ACPError("max_parallel 必须大于等于 1")
+        raise ACPError("max_parallel must be >= 1")
 
     status_file_raw = args.status_file or plan.get("status_file") or setup.get("status_file")
     status_interval_sec = int(
@@ -1192,7 +1206,7 @@ def main() -> int:
     if args.status_interval_sec is not None:
         status_interval_sec = args.status_interval_sec
     if status_interval_sec <= 0:
-        raise ACPError("status_interval_sec 必须大于等于 1")
+        raise ACPError("status_interval_sec must be >= 1")
 
     status_tracker: Optional[StatusTracker] = None
     status_path: Optional[Path] = None
@@ -1216,11 +1230,40 @@ def main() -> int:
     if args.heartbeat_interval_sec is not None:
         heartbeat_interval_sec = args.heartbeat_interval_sec
     if heartbeat_interval_sec <= 0:
-        raise ACPError("heartbeat_interval_sec 必须大于等于 1")
+        raise ACPError("heartbeat_interval_sec must be >= 1")
 
     agents = _parse_agent_configs(plan, setup)
     routing = _parse_routing(plan)
     tasks = _parse_tasks(plan, routing)
+
+    pre_completed: Dict[str, TaskResult] = {}
+    if args.resume:
+        resume_path = Path(args.resume).expanduser().resolve()
+        prev_report = _load_json(resume_path, "resume report")
+        for r in prev_report.get("results", []):
+            if r.get("status") == "success":
+                pre_completed[r["id"]] = TaskResult(
+                    id=r["id"],
+                    agent=r.get("agent", ""),
+                    status="success",
+                    stop_reason=r.get("stop_reason"),
+                    duration_sec=r.get("duration_sec", 0),
+                    output_text=r.get("output_text", ""),
+                    updates=r.get("updates", []),
+                )
+    if args.skip_tasks:
+        for tid in args.skip_tasks.split(","):
+            tid = tid.strip()
+            if tid and tid not in pre_completed:
+                pre_completed[tid] = TaskResult(
+                    id=tid,
+                    agent="",
+                    status="success",
+                    stop_reason="force-skipped",
+                    duration_sec=0,
+                    output_text="",
+                    updates=[],
+                )
 
     started = time.time()
     results = _execute_plan(
@@ -1233,6 +1276,7 @@ def main() -> int:
         status_tracker=status_tracker,
         status_interval_sec=status_interval_sec,
         verbose=args.verbose,
+        pre_completed=pre_completed,
     )
     elapsed = round(time.time() - started, 3)
 
@@ -1263,7 +1307,7 @@ def main() -> int:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         with output_path.open("w", encoding="utf-8") as f:
             json.dump(report, f, ensure_ascii=False, indent=2)
-        print(f"报告已写入: {output_path}")
+        print(f"Report written to: {output_path}")
     else:
         print(json.dumps(report, ensure_ascii=False, indent=2))
 
@@ -1274,5 +1318,5 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except ACPError as exc:
-        print(f"错误: {exc}", file=sys.stderr)
+        print(f"Error: {exc}", file=sys.stderr)
         raise SystemExit(2)

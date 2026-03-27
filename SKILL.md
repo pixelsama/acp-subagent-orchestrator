@@ -43,7 +43,7 @@ Each delegated task must include at minimum:
 - `prompt`: scoped to the artifact needed for the next step.
 - `depends_on`: explicit dependencies.
 - `priority`: `critical` or `sidecar`.
-- `timeout_sec`: timeout in seconds.
+- `timeout_sec`: timeout in seconds. Default is 900. For coding tasks that write files, use at least 1800; for complex multi-file implementations, 2400–3600. Underestimating timeout is the primary cause of dependency chain failures.
 - `ownership`: file/module ownership boundary (required).
 
 Optional fields:
@@ -72,6 +72,7 @@ The following are internal calling conventions for the Agent and are not exposed
 - The runner catalog is maintained in `references/agent_catalog.json` (currently covers 25 common ACP runners).
 - Runners are installed by default to `.runtime/runners` inside the skill directory; do not fall back to global installation automatically.
 - `_meta.setup` in `setup.json` is for setup audit info only (e.g. install scope and runners directory); it is ignored at `acp_orchestrator.py` runtime.
+- Plan JSON can include a `"setup"` field (path relative to the plan file) pointing to the setup JSON. The `--setup` CLI flag takes precedence if both are provided.
 - Use `scripts/acp_orchestrator.py` to execute a plan and produce a report.
 - Long tasks always use fixed call presets (do not ask the user for parameters):
   - `--heartbeat-interval-sec 60`
@@ -82,6 +83,7 @@ The following are internal calling conventions for the Agent and are not exposed
 - Abort decisions are based on the status file — do not abort solely because there is no stdout output:
   - Abort is allowed only when: the process has exited, the status file has not been refreshed for 180 consecutive seconds, or `idle_sec` is persistently approaching the timeout threshold.
 - Explicitly include ownership, output format, and concurrent collaboration constraints in prompts.
+- To resume after partial failure: use `--resume <previous-report.json>` to skip already-succeeded tasks, and `--skip-tasks <id1,id2>` to force-mark specific timed-out tasks as succeeded (after verifying their output artifacts).
 
 ## Resources
 

@@ -60,6 +60,20 @@ python3 scripts/acp_orchestrator.py \
   --output /tmp/acp-report.json
 ```
 
+> **Note:** The plan JSON can also include a `"setup"` field (path relative to the plan file) as an alternative to the `--setup` CLI flag. The CLI flag takes precedence if both are provided.
+
+4. Resume after partial failure:
+
+```bash
+python3 scripts/acp_orchestrator.py \
+  --plan /path/to/plan.json \
+  --resume /tmp/acp-report.json \
+  --skip-tasks task-a,task-b \
+  --output /tmp/acp-report-resumed.json
+```
+
+`--resume` skips tasks that already succeeded. `--skip-tasks` force-marks specific task IDs as succeeded (useful when a task produced its artifact but timed out during finalization).
+
 ## Heartbeat (Long Tasks)
 
 By default, waiting on a long `session/prompt` emits a low-noise heartbeat line every 60s:
