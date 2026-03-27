@@ -1,37 +1,37 @@
-# 委派规则原文（33 条）
+# Delegation Rules (33 Rules)
 
-以下 33 条为本 skill 的原始行为约束，按你的清单原文落地。
+The following 33 rules are the authoritative behavioral constraints for this skill.
 
-1. 只有当用户**明确要求**使用 subagent / delegation / 并行 agent 时，才应调用 `spawn_agent`。
-2. “请更深入分析/更详细研究”不构成自动授权委派。
-3. 委派前先做高层计划，先区分关键路径任务和可并行 sidecar 任务。
-4. 委派前必须先决定“主线程此刻立刻要做什么”。
-5. 如果下一步被某结果阻塞，通常应主线程本地做，不应先外包再空等。
-6. 子任务应优先选小模型处理简单 sidecar，复杂任务再用更强模型。
-7. 子任务必须具体、边界清晰、可独立完成。
-8. 子任务必须实质推进主任务，不能为委派而委派。
-9. 主线程与子线程不得重复劳动。
-10. 不要在同一未解决线程上连续开多个相似委派，除非是确实不同且必要的新任务。
-11. 委派请求要“收窄到下一步所需产物”，避免泛化。
-12. 编码场景下，若可行，优先委派“可落地改代码”的 bounded patch，而不是纯探索。
-13. 编码委派时要明确要求子 agent 直接改文件，并在结果列出改动文件路径。
-14. 多个编码子任务并行时，写入范围必须尽量不重叠。
-15. 可并行委派独立的信息收集问题。
-16. 可并行拆分实现任务，但前提是模块边界清晰且写入集分离。
-17. 验证类委派应只在能并行且能提前暴露具体风险时使用。
-18. `wait_agent` 要非常克制，仅在关键路径被阻塞且必须立即拿结果时使用。
-19. 不要“习惯性反复 wait”；等待期间主线程应继续做不重叠工作。
-20. 不要把已委派的任务再自己重做。
-21. 子 agent 返回后应快速审阅其产出，再集成或修正。
-22. `explorer` 用于代码库中“明确、窄范围”的问题。
-23. `explorer` 应避免重复探索已覆盖问题；相关问题优先复用既有 explorer。
-24. 多个独立探索问题可并行开多个 explorer。
-25. `worker` 用于执行/实现类工作。
-26. 给 `worker` 必须明确文件/模块所有权与责任边界。
-27. 必须提醒 `worker`：不是独占代码库，不得回滚他人改动，要兼容并发改动。
-28. 若后续任务强依赖同一上下文，优先用 `send_input` 复用已有 agent，而不是重复新建。
-29. `send_input` 的 `interrupt=true` 只用于需要立即打断并重定向当前任务时。
-30. `wait_agent` 可一次等多个目标，常用于“谁先完成先用谁”。
-31. agent 不再需要时应 `close_agent`，避免长期悬挂占用。
-32. 关闭后若要继续可 `resume_agent` 再发送任务。
-33. 核心目标是：在不增加协调成本的前提下，用并行换总时长、用分工降风险。
+1. Only call `spawn_agent` when the user **explicitly requests** the use of a subagent / delegation / parallel agent.
+2. “Please analyze more deeply / research in more detail” does not constitute automatic delegation authorization.
+3. Before delegating, make a high-level plan and distinguish critical-path tasks from parallelizable sidecar tasks.
+4. Before delegating, decide what the main thread will do immediately right now.
+5. If the next step is blocked on a result, the main thread should typically handle it locally rather than outsourcing it and idling.
+6. Prefer smaller models for simple sidecar subtasks; escalate to stronger models for complex tasks.
+7. Subtasks must be specific, clearly bounded, and independently completable.
+8. Subtasks must meaningfully advance the main task — do not delegate for its own sake.
+9. The main thread and subtasks must not duplicate work.
+10. Do not open multiple similar delegations on the same unresolved thread unless they are genuinely distinct and necessary new tasks.
+11. Scope delegation requests to “the artifact needed for the next step” — avoid over-generalizing.
+12. In coding contexts, prefer delegating a bounded patch that directly modifies code over pure exploration, when feasible.
+13. For coding delegations, explicitly require the subagent to modify files directly and list the changed file paths in the result.
+14. When multiple coding subtasks run in parallel, their write scopes must not overlap.
+15. Independent information-gathering questions can be parallelized.
+16. Implementation tasks can be split in parallel, provided module boundaries are clear and write sets are disjoint.
+17. Validation delegations should only be used when parallelism is beneficial and they can expose concrete risks early.
+18. Use `wait_agent` sparingly — only when the critical path is blocked and the result is immediately required.
+19. Do not “habitually wait” repeatedly; the main thread should continue advancing non-overlapping work while waiting.
+20. Do not redo work that has already been delegated.
+21. After a subagent returns, quickly review its output before integrating or correcting it.
+22. `explorer` is for “well-defined, narrow-scope” questions within the codebase.
+23. `explorer` should avoid re-exploring already-covered questions; reuse existing explorers for related questions.
+24. Multiple independent exploration questions can be run in parallel with multiple explorers.
+25. `worker` is for execution and implementation work.
+26. A `worker` must be given explicit file/module ownership and responsibility boundaries.
+27. Remind `worker` that it does not have exclusive access to the codebase — it must not roll back others' changes and must be compatible with concurrent modifications.
+28. If subsequent tasks strongly depend on the same context, prefer reusing an existing agent via `send_input` rather than creating a new one.
+29. `send_input` with `interrupt=true` is only for situations where the current task must be immediately interrupted and redirected.
+30. `wait_agent` can wait on multiple targets at once — commonly used to proceed with whoever finishes first.
+31. Call `close_agent` when an agent is no longer needed to avoid long-running dangling processes.
+32. After closing, use `resume_agent` to continue if needed.
+33. Core goal: reduce total elapsed time through parallelism and reduce risk through specialization, without increasing coordination overhead.

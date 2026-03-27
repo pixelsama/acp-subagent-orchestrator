@@ -1,4 +1,4 @@
 interface:
-  display_name: "ACP 子代理编排器"
-  short_description: "自然语言驱动的 ACP 子代理编排：Agent 自主 setup、权限确认与委派执行。"
-  default_prompt: "当用户要求配置 subagent 时，只用自然语言与用户沟通。Agent 自主调用 setup.py 完成清单展示、隔离安装 runner、连通探测和权限编号选择落盘；后续按关键路径与 sidecar 规则，通过 ACP 执行有边界委派。"
+  display_name: "ACP Subagent Orchestrator"
+  short_description: "Natural language-driven ACP subagent orchestration: Agent autonomously handles setup, permission confirmation, and delegation execution."
+  default_prompt: "When the user asks to configure a subagent, communicate with the user in natural language only. The Agent autonomously invokes setup.py to display the runner catalog, install runners in isolation, probe connectivity, and persist permission selections. Subsequent delegation follows critical-path and sidecar rules, executing bounded delegations via ACP."

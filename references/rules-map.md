@@ -1,40 +1,40 @@
-# 委派规则映射
+# Delegation Rules Map
 
-## 规则真源
+## Source of Truth
 
-- 33 条原文规则：`references/delegation-rules.md`
+- 33 rules (full text): `references/delegation-rules.md`
 
-## 按编号分组映射
+## Grouped by Rule Number
 
-- 1-2：委派闸门，只在用户明确授权时委派。
-- 3-5：先规划，再处理关键路径。
-- 6：模型路由优先级（简单 sidecar 用小模型，复杂任务再升级）。
-- 7-8：子任务质量门槛（具体、边界清晰、独立可完成、实质推进主任务）。
-- 9-11：避免重复劳动与重复委派，委派请求收窄到下一步产物。
-- 12-13：编码任务优先 bounded patch，并要求列出改动文件。
-- 14-16：并行任务必须写入集分离、模块边界清晰。
-- 17：验证类委派只在并行有价值且能提前暴露风险时使用。
-- 18-19：等待要克制，等待期间主线程继续推进。
-- 20-21：不要重做已委派工作，返回后快速审阅与集成。
-- 22-24：explorer 用于窄范围问题，避免重复探索，可并行处理独立问题。
-- 25-27：worker 负责执行实现，必须有明确所有权，并兼容并发改动。
-- 28-30：需要上下文连续时优先复用已有 agent，`interrupt=true` 仅用于必须打断场景，可一次等待多个目标。
-- 31-32：及时关闭不再需要的 agent，必要时再 resume。
-- 33：核心目标是以更低协调成本换取更短总时长和更低风险。
+- 1-2: Delegation gate — only delegate when the user explicitly authorizes it.
+- 3-5: Plan first, then handle the critical path.
+- 6: Model routing priority (small model for simple sidecars, escalate for complex tasks).
+- 7-8: Subtask quality bar (specific, clearly bounded, independently completable, must meaningfully advance the main task).
+- 9-11: Avoid duplicate work and repeated delegations; scope requests to the next-step artifact.
+- 12-13: Prefer bounded patches for coding tasks; require the changed file list in results.
+- 14-16: Parallel tasks must have disjoint write sets and clear module boundaries.
+- 17: Validation delegations only when parallelism is valuable and can expose risks early.
+- 18-19: Be conservative with waiting; main thread keeps advancing while waiting.
+- 20-21: Don't redo delegated work; quickly review and integrate on return.
+- 22-24: `explorer` for narrow-scope questions, avoid re-exploration, can parallelize independent questions.
+- 25-27: `worker` for execution/implementation, must have explicit ownership and be compatible with concurrent changes.
+- 28-30: Reuse existing agent via `send_input` when context continuity is needed; `interrupt=true` only when a hard interrupt is necessary; can wait on multiple targets at once.
+- 31-32: Close agents promptly when no longer needed; `resume_agent` when continuing later.
+- 33: Core goal — lower total elapsed time through parallelism and lower risk through specialization, without increasing coordination overhead.
 
-## `acp_orchestrator.py` 已硬性执行的规则
+## Rules Enforced by `acp_orchestrator.py`
 
-- 规则 1：计划必须包含 `delegation_explicitly_requested=true`。
-- 规则 3-5：依赖图 + `critical`/`sidecar` 调度。
-- 规则 7：每个任务必须提供 `ownership`，否则拒绝执行。
-- 规则 14-16：受控并行，依赖就绪后才派发。
-- 规则 18-19：调度循环采用非阻塞轮询，减少无意义等待。
-- 规则 31：任务结束后回收子进程。
-- 自然语言路由：支持 `plan.routing` + `task.role`，将“前端给 Claude”映射到实际 agent。
-- setup 预配置：支持通过 `--setup` 预设 runner、默认 mode、默认 config options、自动审批策略。
-- 会话下发：支持 `session/set_mode` 与 `session/set_config_option`，可由 setup 默认值和 task 局部覆写共同驱动。
+- Rule 1: Plan must include `delegation_explicitly_requested=true`.
+- Rules 3-5: Dependency graph + `critical`/`sidecar` scheduling.
+- Rule 7: Every task must provide `ownership` or execution is refused.
+- Rules 14-16: Controlled parallelism — tasks are dispatched only when their dependencies are ready.
+- Rules 18-19: Scheduling loop uses non-blocking polling to reduce idle waiting.
+- Rule 31: Subprocesses are reclaimed after tasks complete.
+- Natural language routing: supports `plan.routing` + `task.role` to map “give frontend to Claude” to a concrete agent.
+- Setup pre-configuration: supports pre-setting runner, default mode, default config options, and auto-approval policy via `--setup`.
+- Session config delivery: supports `session/set_mode` and `session/set_config_option`, driven by setup defaults and per-task overrides.
 
-## 仍需在计划与提示词中落实的规则
+## Rules That Must Be Enforced in Plans and Prompts
 
-- 规则 2、6-13、17、20-30、32-33。
-- 在每个任务提示词中显式写清：所有权边界、交付产物格式、禁止回滚他人改动。
+- Rules 2, 6-13, 17, 20-30, 32-33.
+- In each task prompt, explicitly state: ownership boundaries, output artifact format, and prohibition on rolling back others' changes.

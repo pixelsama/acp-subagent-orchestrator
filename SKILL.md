@@ -1,94 +1,94 @@
 ---
 name: acp-subagent-orchestrator
-description: 使用 Agent Client Protocol (ACP) 编排外部 Agent 的显式委派流程。仅在用户明确要求 subagent/delegation/并行 agent 时触发。适用于把任务拆成有边界子任务（如 Claude、Codex、Copilot CLI），并要求清晰所有权、可控并行与安全集成。此 skill 必须以自然语言交互为入口：用户只表达意图，Agent 自主完成 setup、安装、探测、按需权限配置和任务分派；不得要求用户运行 CLI 或提供参数。
+description: Explicit delegation workflow for orchestrating external agents via Agent Client Protocol (ACP). Only triggered when the user explicitly requests subagent/delegation/parallel agent. Designed to split tasks into bounded subtasks (e.g. Claude, Codex, Copilot CLI) with clear ownership, controlled parallelism, and safe integration. This skill must be entered via natural language: the user expresses intent only; the Agent autonomously handles setup, installation, probing, permission configuration, and task dispatch — the user must never be asked to run CLI commands or supply parameters.
 ---
 
-# ACP 子代理编排器
+# ACP Subagent Orchestrator
 
-## 核心原则
+## Core Principles
 
-- 只接受自然语言意图，不把 CLI 参数暴露给用户。
-- 用户绝不需要自己运行脚本；Agent 负责执行所有命令。
-- 编排参数由 Agent 自主决定，默认使用固定稳健档位，不向用户询问脚本参数。
-- 仅在必要决策点向用户确认，例如是否接入某个 agent；高级权限/mode 配置仅在用户明确提出时再确认。
-- setup 时禁止在未确认用户选择的情况下默认全量配置所有 runner。
-- `references/delegation-rules.md` 是委派纪律真源，执行前先完整阅读。
+- Accept natural language intent only; do not expose CLI parameters to the user.
+- The user never runs scripts themselves; the Agent is responsible for executing all commands.
+- Orchestration parameters are decided autonomously by the Agent using fixed, stable defaults — do not ask the user for script parameters.
+- Confirm with the user only at necessary decision points (e.g. which agent to connect); advanced permission/mode configuration is only confirmed when the user explicitly requests it.
+- During setup, never default to configuring all runners without first confirming the user's selection.
+- `references/delegation-rules.md` is the authoritative source for delegation discipline — read it in full before executing.
 
-## 自然语言 Setup 流程
+## Natural Language Setup Flow
 
-当用户说“配置 subagent”时，按以下对话流程执行：
+When the user says “configure subagent”, follow this conversational flow:
 
-1. Agent 自行读取支持列表并告诉用户可接入项（例如 Claude/Codex/Copilot）。
-2. 用户用自然语言选择目标（例如“先配 Claude”）。
-3. Agent 自行探测本机 runner；不存在时自动安装到隔离目录（默认）。
-4. Agent 探测连接可用性（`initialize` + `session/new`）。
-5. Agent 把结果写入 `setup.json`，然后明确告知“配置完成”。
+1. The Agent reads the supported runner list and tells the user what is available (e.g. Claude/Codex/Copilot).
+2. The user selects a target in natural language (e.g. “set up Claude first”).
+3. The Agent probes for the runner on the local machine; if absent, installs it to an isolated directory (default).
+4. The Agent probes connection availability (`initialize` + `session/new`).
+5. The Agent writes results to `setup.json` and explicitly reports “setup complete”.
 
-## 自然语言委派流程
+## Natural Language Delegation Flow
 
-当用户说“前端交给 Claude，后端你自己做”时：
+When the user says “give the frontend to Claude, you handle the backend”:
 
-1. 主线程先做高层计划，明确自己立刻要推进的关键路径任务。
-2. 将可并行子任务映射到外部 agent（例如 frontend -> claude）。
-3. 为每个子任务定义明确所有权边界，避免写入重叠。
-4. 调用 `scripts/acp_orchestrator.py` 执行子任务并汇总结果。
-5. 主线程快速审阅子任务产物并集成，不重复劳动。
+1. The main thread makes a high-level plan first and identifies the critical-path tasks it will drive immediately.
+2. Map parallelizable subtasks to external agents (e.g. frontend -> claude).
+3. Define clear ownership boundaries for each subtask to prevent write overlap.
+4. Invoke `scripts/acp_orchestrator.py` to execute subtasks and collect results.
+5. The main thread quickly reviews subtask output and integrates it without duplicating work.
 
-## 任务契约
+## Task Contract
 
-每个委派任务至少包含：
+Each delegated task must include at minimum:
 
-- `id`：稳定任务编号。
-- `agent` 或 `role`：目标 agent 或待路由角色。
-- `prompt`：收窄到下一步所需产物。
-- `depends_on`：显式依赖。
-- `priority`：`critical` 或 `sidecar`。
-- `timeout_sec`：超时时间。
-- `ownership`：文件/模块所有权边界（必填）。
+- `id`: stable task identifier.
+- `agent` or `role`: target agent or role to route to.
+- `prompt`: scoped to the artifact needed for the next step.
+- `depends_on`: explicit dependencies.
+- `priority`: `critical` or `sidecar`.
+- `timeout_sec`: timeout in seconds.
+- `ownership`: file/module ownership boundary (required).
 
-可选字段：
+Optional fields:
 
-- `session_mode`：临时 mode。
-- `session_config_options`：会话 config 覆写。
+- `session_mode`: temporary mode override.
+- `session_config_options`: session config overrides.
 
-## 护栏
+## Guardrails
 
-- 未显式授权委派时，不运行外部子代理。
-- 不把“深入分析”误判为委派授权。
-- 避免重复/重叠子任务。
-- 等待要克制；主线程在等待期间继续推进不重叠工作。
-- 长任务（建议指 `timeout_sec > 300`）默认按“静默正常”处理：未出现中间语义输出不等于卡死。
-- 长任务期间优先依赖编排器心跳判断存活状态；仅在超时、进程退出或明确错误时中止。
-- 心跳应保持低噪音（只报告运行时长/更新计数/空闲时长），避免转发子代理语义内容。
-- 不再使用的子进程及时关闭。
+- Do not run external subagents unless delegation has been explicitly authorized.
+- Do not misinterpret “analyze in more depth” as delegation authorization.
+- Avoid duplicate or overlapping subtasks.
+- Be conservative with waiting; the main thread continues advancing non-overlapping work while waiting.
+- Long tasks (`timeout_sec > 300`) are treated as “silent is normal” by default — no intermediate semantic output does not mean the task is stuck.
+- During long tasks, rely on orchestrator heartbeats to assess liveness; abort only on timeout, process exit, or explicit error.
+- Heartbeats must be low-noise (report only elapsed time / update count / idle duration) — do not forward subagent semantic content.
+- Close subprocesses promptly when no longer needed.
 
-## 内部实现说明（给 Agent）
+## Internal Implementation Notes (for Agent)
 
-以下内容是 Agent 的内部调用约定，不向用户暴露为操作步骤：
+The following are internal calling conventions for the Agent and are not exposed to the user as steps:
 
-- 用 `scripts/setup.py --list-catalog` 获取支持列表。
-- 先与用户确认要接入的 runner，再用 `scripts/setup.py --agents <user-selected>` 生成或更新 `setup.json`（需要全量时显式使用 `--agents all`）。
-- 默认走快速 setup（不 discover，不展示 mode/configOptions）；仅在用户明确要求权限/mode 控制时，才追加 `--discover` 与相关高级参数。
-- runner catalog 由 `references/agent_catalog.json` 维护（当前覆盖 25 个常用 ACP runners）。
-- runner 默认安装到 skill 目录内 `.runtime/runners`，不自动回退到全局安装。
-- `setup.json` 中 `_meta.setup` 仅用于 setup 审计信息（如安装策略和 runners 目录），`acp_orchestrator.py` 运行时忽略该字段。
-- 用 `scripts/acp_orchestrator.py` 执行 plan 并输出报告。
-- 长任务统一使用固定调用档位（不向用户询问参数）：
+- Use `scripts/setup.py --list-catalog` to get the supported runner list.
+- Confirm the runner(s) to connect with the user first, then use `scripts/setup.py --agents <user-selected>` to generate or update `setup.json` (use `--agents all` only when explicitly needed).
+- Default to quick setup (no discovery, no mode/configOptions display); only append `--discover` and related advanced flags when the user explicitly requests permission/mode control.
+- The runner catalog is maintained in `references/agent_catalog.json` (currently covers 25 common ACP runners).
+- Runners are installed by default to `.runtime/runners` inside the skill directory; do not fall back to global installation automatically.
+- `_meta.setup` in `setup.json` is for setup audit info only (e.g. install scope and runners directory); it is ignored at `acp_orchestrator.py` runtime.
+- Use `scripts/acp_orchestrator.py` to execute a plan and produce a report.
+- Long tasks always use fixed call presets (do not ask the user for parameters):
   - `--heartbeat-interval-sec 60`
   - `--status-interval-sec 15`
   - `--status-file /tmp/acp-status-<task-or-plan>-<timestamp>.json`
   - `--output /tmp/acp-report-<task-or-plan>-<timestamp>.json`
-- 若编排器后台运行，主线程每 60 秒轮询一次 status file（`cat`/`jq`）确认健康状态。
-- 中止判定按 status file 进行，不得仅凭“无 stdout 输出”中止：
-  - 仅当进程消失、status file 连续 180 秒未刷新，或 `idle_sec` 持续接近超时阈值时，才允许中止。
-- 在提示词中显式写出 ownership、输出格式、并发协作约束。
+- If the orchestrator runs in the background, the main thread polls the status file every 60 seconds (`cat`/`jq`) to verify health.
+- Abort decisions are based on the status file — do not abort solely because there is no stdout output:
+  - Abort is allowed only when: the process has exited, the status file has not been refreshed for 180 consecutive seconds, or `idle_sec` is persistently approaching the timeout threshold.
+- Explicitly include ownership, output format, and concurrent collaboration constraints in prompts.
 
-## 资源
+## Resources
 
-- `scripts/setup.py`：setup 主流程（支持隔离安装、探测、权限落盘）。
-- `references/agent_catalog.json`：runner 清单与安装元信息（25 agents，含别名和分发信息）。
-- `scripts/acp_orchestrator.py`：ACP JSON-RPC 编排器（stdio 传输）。
-- `references/delegation-rules.md`：33 条规则原文。
-- `references/setup.example.json`：setup 示例。
-- `references/plan.example.json`：plan 示例。
-- `references/rules-map.md`：规则映射。
+- `scripts/setup.py`: setup main flow (supports isolated install, discovery, permission persistence).
+- `references/agent_catalog.json`: runner catalog with install metadata (25 agents, including aliases and distribution info).
+- `scripts/acp_orchestrator.py`: ACP JSON-RPC orchestration runtime (stdio transport).
+- `references/delegation-rules.md`: 33 delegation rules (source of truth).
+- `references/setup.example.json`: setup example.
+- `references/plan.example.json`: plan example.
+- `references/rules-map.md`: rules mapping.
