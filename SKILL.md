@@ -10,6 +10,7 @@ description: Explicit delegation workflow for orchestrating external agents via 
 - Accept natural language intent only; do not expose CLI parameters to the user.
 - The user never runs scripts themselves; the Agent is responsible for executing all commands.
 - Orchestration parameters are decided autonomously by the Agent using fixed, stable defaults — do not ask the user for script parameters.
+- If the user asks for a model preference (or asks to set a default model), the Agent must handle model discovery and selection end-to-end, while keeping script details hidden from the user.
 - Confirm with the user only at necessary decision points (e.g. which agent to connect); advanced permission/mode configuration is only confirmed when the user explicitly requests it.
 - During setup, never default to configuring all runners without first confirming the user's selection.
 - `references/delegation-rules.md` is the authoritative source for delegation discipline — read it in full before executing.
@@ -22,7 +23,8 @@ When the user says “configure subagent”, follow this conversational flow:
 2. The user selects a target in natural language (e.g. “set up Claude first”).
 3. The Agent probes for the runner on the local machine; if absent, installs it to an isolated directory (default).
 4. The Agent probes connection availability (`initialize` + `session/new`).
-5. The Agent writes results to `setup.json` and explicitly reports “setup complete”.
+5. If model options are requested or needed, the Agent discovers supported models, shows the model list in natural language, and asks the user to choose.
+6. The Agent writes results to `setup.json` (including the selected default model when applicable) and explicitly reports “setup complete”.
 
 ## Natural Language Delegation Flow
 
@@ -68,10 +70,16 @@ The following are internal calling conventions for the Agent and are not exposed
 
 - Use `scripts/setup.py --list-catalog` to get the supported runner list.
 - Confirm the runner(s) to connect with the user first, then use `scripts/setup.py --agents <user-selected>` to generate or update `setup.json` (use `--agents all` only when explicitly needed).
-- Default to quick setup (no discovery, no mode/configOptions display); only append `--discover` and related advanced flags when the user explicitly requests permission/mode control.
+- Default to quick setup (no discovery, no mode/configOptions display). Exception: when the user asks for default model selection (or gives an explicit model preference), run discovery and model selection flow automatically without exposing CLI details.
 - The runner catalog is maintained in `references/agent_catalog.json` (currently covers 25 common ACP runners).
 - Runners are installed by default to `.runtime/runners` inside the skill directory; do not fall back to global installation automatically.
 - `_meta.setup` in `setup.json` is for setup audit info only (e.g. install scope and runners directory); it is ignored at `acp_orchestrator.py` runtime.
+- Model selection policy during setup:
+  - Run discovery for the selected runner(s) and look for `configOptions` entry `id=model`.
+  - Present discovered model choices to the user in natural language (name + value), then ask the user to pick one.
+  - Persist the selection as that agent's default model in `setup.json` via `default_config_options.model`.
+  - If discovery does not return model choices, report that limitation clearly and keep the runner's current default model.
+  - For execution, task-level `session_config_options.model` overrides setup-level default model.
 - Plan JSON can include a `"setup"` field (path relative to the plan file) pointing to the setup JSON. The `--setup` CLI flag takes precedence if both are provided.
 - Use `scripts/acp_orchestrator.py` to execute a plan and produce a report.
 - Long tasks always use fixed call presets (do not ask the user for parameters):
