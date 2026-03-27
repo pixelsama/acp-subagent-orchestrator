@@ -80,8 +80,13 @@ The following are internal calling conventions for the Agent and are not exposed
   - Persist the selection as that agent's default model in `setup.json` via `default_config_options.model`.
   - If discovery does not return model choices, report that limitation clearly and keep the runner's current default model.
   - For execution, task-level `session_config_options.model` overrides setup-level default model.
+- Strict model behavior during execution:
+  - Model application is strict by default: if a requested model is unavailable or cannot be applied, the task must fail immediately.
+  - Error messages must include available model choices when exposed by the runner.
+  - Error guidance must offer two clear actions: switch global default model (`setup.json`), or set task-level explicit model for this run only.
 - Plan JSON can include a `"setup"` field (path relative to the plan file) pointing to the setup JSON. The `--setup` CLI flag takes precedence if both are provided.
 - Use `scripts/acp_orchestrator.py` to execute a plan and produce a report.
+- `scripts/runner_health.py` is an on-demand diagnostic tool (not a mandatory pre-run step): use it when the user asks which runners are connected or whether default models are still available.
 - Long tasks always use fixed call presets (do not ask the user for parameters):
   - `--heartbeat-interval-sec 60`
   - `--status-interval-sec 15`
@@ -96,6 +101,7 @@ The following are internal calling conventions for the Agent and are not exposed
 ## Resources
 
 - `scripts/setup.py`: setup main flow (supports isolated install, discovery, permission persistence).
+- `scripts/runner_health.py`: on-demand runner connectivity/default-model availability check.
 - `references/agent_catalog.json`: runner catalog with install metadata (25 agents, including aliases and distribution info).
 - `scripts/acp_orchestrator.py`: ACP JSON-RPC orchestration runtime (stdio transport).
 - `references/delegation-rules.md`: 33 delegation rules (source of truth).

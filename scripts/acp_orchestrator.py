@@ -828,6 +828,142 @@ def _parse_tasks(plan: Dict[str, Any], routing: Dict[str, str]) -> List[TaskSpec
     return tasks
 
 
+def _to_non_empty_str(value: Any) -> Optional[str]:
+    if isinstance(value, str):
+        normalized = value.strip()
+        if normalized:
+            return normalized
+    return None
+
+
+def _extract_option_id(raw: Dict[str, Any]) -> Optional[str]:
+    for key in ("id", "configId", "config_id"):
+        value = _to_non_empty_str(raw.get(key))
+        if value:
+            return value
+    return None
+
+
+def _collect_choice_values(raw: Any, values: List[str], seen: set[str]) -> None:
+    if isinstance(raw, list):
+        for item in raw:
+            _collect_choice_values(item, values, seen)
+        return
+
+    if isinstance(raw, dict):
+        for key in ("value", "id", "optionId", "option_id"):
+            value = _to_non_empty_str(raw.get(key))
+            if value and value not in seen:
+                seen.add(value)
+                values.append(value)
+
+        for key in ("options", "selectOptions", "choices", "items", "enum", "allowedValues", "values"):
+            if key in raw:
+                _collect_choice_values(raw.get(key), values, seen)
+
+        for key in ("value", "select", "schema", "data", "payload"):
+            nested = raw.get(key)
+            if isinstance(nested, (dict, list)):
+                _collect_choice_values(nested, values, seen)
+        return
+
+    value = _to_non_empty_str(raw)
+    if value and value not in seen:
+        seen.add(value)
+        values.append(value)
+
+
+def _extract_option_choices(session_new_result: Dict[str, Any], option_id: str) -> List[str]:
+    raw_options = session_new_result.get("configOptions")
+    if raw_options is None:
+        raw_options = session_new_result.get("config_options")
+    if not isinstance(raw_options, list):
+        return []
+
+    for raw in raw_options:
+        if not isinstance(raw, dict):
+            continue
+        if _extract_option_id(raw) != option_id:
+            continue
+
+        candidates: List[Any] = []
+        for key in ("options", "selectOptions", "choices", "items", "enum", "allowedValues", "values"):
+            if key in raw:
+                candidates.append(raw.get(key))
+        for key in ("value", "select", "schema", "data", "payload"):
+            nested = raw.get(key)
+            if isinstance(nested, (dict, list)):
+                candidates.append(nested)
+
+        values: List[str] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            _collect_choice_values(candidate, values, seen)
+        return values
+
+    return []
+
+
+def _extract_option_current_value(session_new_result: Dict[str, Any], option_id: str) -> Optional[str]:
+    raw_options = session_new_result.get("configOptions")
+    if raw_options is None:
+        raw_options = session_new_result.get("config_options")
+    if not isinstance(raw_options, list):
+        return None
+
+    for raw in raw_options:
+        if not isinstance(raw, dict):
+            continue
+        if _extract_option_id(raw) != option_id:
+            continue
+
+        direct = _to_non_empty_str(raw.get("currentValue")) or _to_non_empty_str(raw.get("current_value"))
+        if direct:
+            return direct
+
+        value_payload = raw.get("value")
+        if isinstance(value_payload, dict):
+            nested = _to_non_empty_str(value_payload.get("currentValue")) or _to_non_empty_str(
+                value_payload.get("current_value")
+            )
+            if nested:
+                return nested
+        return None
+
+    return None
+
+
+def _extract_model_choices(session_new_result: Dict[str, Any]) -> List[str]:
+    return _extract_option_choices(session_new_result, "model")
+
+
+def _extract_current_model(session_new_result: Dict[str, Any]) -> Optional[str]:
+    return _extract_option_current_value(session_new_result, "model")
+
+
+def _format_model_selection_failure(
+    *,
+    agent_name: str,
+    requested_model: str,
+    available_models: Optional[List[str]] = None,
+    root_cause: Optional[str] = None,
+) -> str:
+    parts = [
+        f"Model '{requested_model}' is not usable for agent '{agent_name}'.",
+    ]
+    if available_models:
+        parts.append(f"Available models: {', '.join(available_models)}.")
+    else:
+        parts.append("Available models are unknown (runner did not expose model choices).")
+    parts.append(
+        "Fix options: update setup.json agents.<agent>.default_config_options.model for a global default,"
+        " or set task.session_config_options.model explicitly for this task."
+    )
+    if root_cause:
+        parts.append(f"Root cause: {root_cause}")
+    return " ".join(parts)
+
+
 def _add_warning(conn: ACPConnection, message: str) -> None:
     conn.updates.append({"method": "_orchestrator/warning", "params": {"message": message}})
 
@@ -854,12 +990,24 @@ def _apply_session_settings(
     session_id: str,
     task: TaskSpec,
     agent_cfg: AgentConfig,
+    available_models: Optional[List[str]] = None,
 ) -> None:
     strict = agent_cfg.strict_session_config
     timeout_sec = max(5, min(task.timeout_sec, 30))
 
     merged_options = dict(agent_cfg.default_config_options)
     merged_options.update(task.session_config_options)
+    requested_model = _to_non_empty_str(merged_options.get("model"))
+
+    if requested_model and available_models and requested_model not in available_models:
+        raise ACPError(
+            _format_model_selection_failure(
+                agent_name=agent_cfg.name,
+                requested_model=requested_model,
+                available_models=available_models,
+                root_cause="requested model is not in the discovered model choices",
+            )
+        )
 
     mode = task.session_mode or merged_options.get("mode") or agent_cfg.default_mode
 
@@ -884,14 +1032,28 @@ def _apply_session_settings(
 
     merged_options.pop("mode", None)
     for config_id, value in sorted(merged_options.items()):
-        _request_with_fallback(
-            conn,
-            "session/set_config_option",
-            {"sessionId": session_id, "configId": config_id, "value": value},
-            timeout_sec,
-            strict,
-            f"session/set_config_option({config_id}={value}) failed",
-        )
+        option_strict = strict or config_id == "model"
+        try:
+            _request_with_fallback(
+                conn,
+                "session/set_config_option",
+                {"sessionId": session_id, "configId": config_id, "value": value},
+                timeout_sec,
+                option_strict,
+                f"session/set_config_option({config_id}={value}) failed",
+            )
+        except ACPError as exc:
+            if config_id == "model":
+                requested = _to_non_empty_str(value) or str(value)
+                raise ACPError(
+                    _format_model_selection_failure(
+                        agent_name=agent_cfg.name,
+                        requested_model=requested,
+                        available_models=available_models,
+                        root_cause=str(exc),
+                    )
+                ) from exc
+            raise
 
 
 def _build_task_prompt(task: TaskSpec) -> str:
@@ -966,7 +1128,8 @@ def _run_task(
         if not isinstance(session_id, str) or not session_id:
             raise ACPError("session/new did not return sessionId")
 
-        _apply_session_settings(conn, session_id, task, agent_cfg)
+        available_models = _extract_model_choices(new_result)
+        _apply_session_settings(conn, session_id, task, agent_cfg, available_models=available_models)
 
         prompt_result = conn.request(
             "session/prompt",

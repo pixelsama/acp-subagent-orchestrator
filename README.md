@@ -74,6 +74,16 @@ python3 scripts/acp_orchestrator.py \
 
 `--resume` skips tasks that already succeeded. `--skip-tasks` force-marks specific task IDs as succeeded (useful when a task produced its artifact but timed out during finalization).
 
+## Strict Model Handling
+
+When a task requests a `model` via `session_config_options`, model application is treated as strict:
+
+- if the requested model is unavailable, the task fails immediately;
+- the error includes currently available model choices (when exposed by the runner);
+- the error message provides two fix paths:
+  - update global default model in `setup.json` (`agents.<agent>.default_config_options.model`);
+  - or set `task.session_config_options.model` explicitly for that task only.
+
 ## Heartbeat (Long Tasks)
 
 By default, waiting on a long `session/prompt` emits a low-noise heartbeat line every 60s:
@@ -88,10 +98,29 @@ This heartbeat is intentionally non-semantic and only signals liveness.
 - disable heartbeat: `--no-heartbeat`
 - config via `plan/setup`: `heartbeat_enabled`, `heartbeat_interval_sec`
 
+## Runner Health Check (On Demand)
+
+Use this only when you need a status snapshot. It is not required before every run.
+
+```bash
+python3 scripts/runner_health.py --setup ./setup.json
+```
+
+Checks include:
+
+- whether each runner can connect via ACP;
+- whether the configured default model is still in the runner's available model list.
+
+Optional:
+
+- check subset: `--agents codex,copilot`
+- JSON report: `--output /tmp/acp-runner-health.json`
+
 ## Repository Layout
 
 - `SKILL.md`: skill instructions and guardrails
 - `scripts/setup.py`: setup config generation (discovery optional)
+- `scripts/runner_health.py`: on-demand runner/model health check
 - `references/agent_catalog.json`: ACP runner catalog (aliases + install metadata)
 - `scripts/acp_orchestrator.py`: ACP JSON-RPC orchestration runtime
 - `references/`: examples and rule references
