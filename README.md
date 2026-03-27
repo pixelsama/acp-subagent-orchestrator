@@ -36,6 +36,7 @@ Example:
 
 ```bash
 # Configure only Claude (recommended to match explicit user choice)
+# default is quick setup: no dynamic discovery, keep runner default mode
 python3 scripts/setup.py --agents claude
 
 # Configure by alias (e.g. github-copilot / qwen-code / factory-droid)
@@ -43,6 +44,9 @@ python3 scripts/setup.py --agents github-copilot,qwen-code,factory-droid
 
 # Configure all runners explicitly
 python3 scripts/setup.py --agents all
+
+# Advanced: enable dynamic discovery and set mode/options explicitly
+python3 scripts/setup.py --agents codex --discover --codex-mode full-access
 ```
 
 2. Prepare a plan JSON (see [`references/plan.example.json`](references/plan.example.json)).
@@ -73,7 +77,7 @@ This heartbeat is intentionally non-semantic and only signals liveness.
 ## Repository Layout
 
 - `SKILL.md`: skill instructions and guardrails
-- `scripts/setup.py`: setup/discovery and config generation
+- `scripts/setup.py`: setup config generation (discovery optional)
 - `references/agent_catalog.json`: ACP runner catalog (aliases + install metadata)
 - `scripts/acp_orchestrator.py`: ACP JSON-RPC orchestration runtime
 - `references/`: examples and rule references

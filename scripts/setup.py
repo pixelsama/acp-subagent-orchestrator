@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """生成 ACP 子代理编排器的 setup 配置。
 
-setup 阶段会先写入 runner 基础配置；若能成功连上 agent，会动态发现
-`configOptions / modes` 并支持在 setup 阶段完成默认权限配置。
+setup 阶段会先写入 runner 基础配置。默认不做动态发现，保持 runner 默认
+mode；仅在显式启用 discover 时，读取 `configOptions / modes` 并支持
+setup 阶段的默认会话配置。
 """
 
 from __future__ import annotations
@@ -1123,15 +1124,21 @@ def _build_parser() -> argparse.ArgumentParser:
         help="兼容旧字段：同时写入 default_mode（默认仅写 default_config_options）",
     )
 
-    parser.add_argument(
+    discover_group = parser.add_mutually_exclusive_group()
+    discover_group.add_argument(
+        "--discover",
+        action="store_true",
+        help="启用 ACP 动态发现（读取 runner 返回的 configOptions/modes）",
+    )
+    discover_group.add_argument(
         "--no-discover",
         action="store_true",
-        help="跳过 ACP 动态发现（不读取 runner 返回的 configOptions/modes）",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--require-discovery",
         action="store_true",
-        help="要求所有 agent 都必须动态发现成功，否则报错",
+        help="要求所有 agent 都必须动态发现成功，否则报错（自动启用 discover）",
     )
     parser.add_argument(
         "--discovery-timeout",
@@ -1142,12 +1149,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--interactive",
         action="store_true",
-        help="动态发现后，交互式选择默认权限配置",
+        help="动态发现后，交互式选择默认会话配置（自动启用 discover）",
     )
     parser.add_argument(
         "--interactive-all-options",
         action="store_true",
-        help="交互式模式下同时配置非 mode 配置项",
+        help="交互式模式下同时配置非 mode 配置项（自动启用 discover）",
     )
     parser.add_argument(
         "--strict-command-check",
@@ -1290,8 +1297,9 @@ def _discover_all_agents(
     config: Dict[str, object],
     global_cwd: str,
     selected_agents: List[str],
+    discover_enabled: bool,
 ) -> Dict[str, DiscoveryResult]:
-    if args.no_discover:
+    if not discover_enabled:
         return {}
 
     discovered: Dict[str, DiscoveryResult] = {}
@@ -1428,8 +1436,30 @@ def main() -> int:
     if args.all_permissions:
         auto_approve = True
 
+    has_config_index_overrides = False
+    for agent in selected_agents:
+        if getattr(args, f"{agent}_config_index"):
+            has_config_index_overrides = True
+            break
+
+    needs_discovery = bool(
+        args.require_discovery
+        or args.interactive
+        or args.interactive_all_options
+        or has_config_index_overrides
+    )
+    if args.no_discover and needs_discovery:
+        raise ValueError("当前参数需要动态发现，不能同时关闭 discover")
+    discover_enabled = bool(args.discover or needs_discovery)
+
     config = _build_initial_config(args, global_cwd, auto_approve, selected_agents)
-    discovered = _discover_all_agents(args, config, global_cwd, selected_agents)
+    discovered = _discover_all_agents(
+        args,
+        config,
+        global_cwd,
+        selected_agents,
+        discover_enabled=discover_enabled,
+    )
     if discovered:
         config["discovery"] = _discovery_snapshot(discovered)
     mode_overrides = _resolve_mode_overrides(args, selected_agents)
@@ -1471,7 +1501,7 @@ def main() -> int:
 
     print(f"\nsetup 配置已写入: {output_path}")
     print("后续运行可加: --setup <该文件路径>")
-    if not args.no_discover and not discovered:
+    if discover_enabled and not discovered:
         print("提示: 本次没有成功发现任何 agent 的动态配置项，可后续重试并加 --require-discovery。")
     return 0
 
