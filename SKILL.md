@@ -1,6 +1,14 @@
 ---
 name: acp-subagent-orchestrator
-description: Explicit delegation workflow for orchestrating external agents via Agent Client Protocol (ACP). Only triggered when the user explicitly requests subagent/delegation/parallel agent. Designed to split tasks into bounded subtasks (e.g. Claude, Codex, Copilot CLI) with clear ownership, controlled parallelism, and safe integration. This skill must be entered via natural language: the user expresses intent only; the Agent autonomously handles setup, installation, probing, permission configuration, and task dispatch — the user must never be asked to run CLI commands or supply parameters.
+description: >-
+  Explicit delegation workflow for orchestrating external agents via Agent
+  Client Protocol (ACP). Only triggered when the user explicitly requests
+  subagent/delegation/parallel agent. Designed to split tasks into bounded
+  subtasks (e.g. Claude, Codex, Copilot CLI) with clear ownership, controlled
+  parallelism, and safe integration. This skill must be entered via natural
+  language: the user expresses intent only; the Agent autonomously handles
+  setup, installation, probing, permission configuration, and task dispatch —
+  the user must never be asked to run CLI commands or supply parameters.
 ---
 
 # ACP Subagent Orchestrator
